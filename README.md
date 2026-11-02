@@ -6,6 +6,10 @@
 
 ## 获取与安装
 
+推荐从 [GitHub Releases](https://github.com/rUrU516/dsh-ocean-surface/releases/latest) 下载版本压缩包，解压到一个长期保留的目录。压缩包包含完整插件及已构建的Client，无需自行构建；安装后请保留解压目录，因为本地安装会链接它。Release 同时附 SHA-256 校验文件。
+
+也可以克隆源码：
+
 ```sh
 git clone https://github.com/rUrU516/dsh-ocean-surface.git
 cd dsh-ocean-surface
