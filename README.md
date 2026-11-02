@@ -1,104 +1,95 @@
-# 海面 · 鼠标涟漪 / Ocean Surface · Cursor Ripples
+# 背景磁带 / Background Tapes
 
-当前 **0.7.1**：统一淡水纹背景 + 沉浸式浮标调节页，不再罗列参数表。默认保留0.5.1的微亮观感。
+**0.8.0 · 开发分支 `feat/cassette-deck`**
 
-这是海面插件的独立仓库，不包含鲸鱼桌面挂件或其桥接插件。插件包名仍为 `@local/dsh-cursor-ripples`，以保持已安装配置的兼容性。
+一个安静可靠的背景底座，以及装着不同氛围的磁带抽屉。不是把每个效果拼进页面，而是让所有磁带使用同一套生命周期、交互和设置接口。
 
-## 获取与安装
+> GitHub 的正式 Release 仍为海面版 **v0.7.0**。这份磁带框架位于新分支，未覆盖主分支或替换旧版发布资产。
 
-推荐从 [GitHub Releases](https://github.com/rUrU516/dsh-ocean-surface/releases/latest) 下载版本压缩包，解压到一个长期保留的目录。压缩包包含完整插件及已构建的Client，无需自行构建；安装后请保留解压目录，因为本地安装会链接它。Release 同时附 SHA-256 校验文件。
+## 四盘内置磁带
 
-也可以克隆源码：
+| 磁带 | 感觉 | 动态方式 |
+|---|---|---|
+| 01 引力点阵 / Dot Field | 紫蓝色轻点阵，鼠标附近像透镜一样弯曲 | 平时静止，交互后恢复并休眠 |
+| 02 空间薄膜 / Space Membrane | 极淡的空间网格，指尖留下短暂涟漪 | 交互触发，余波消退后休眠 |
+| 03 风的等高线 / Quiet Contours | 少量、低对比的细线 | 缓慢流动，可调到静止 |
+| 04 深海来信 / Ocean Surface | 原来的WebGL海面和传播余波 | 连续，保留原有配色和阻尼 |
 
-```sh
-git clone https://github.com/rUrU516/dsh-ocean-surface.git
-cd dsh-ocean-surface
-```
-
-在 DSH 中让助手通过插件管理器安装这个克隆目录的绝对路径。仓库根目录就是完整 bundle，已包含构建产物；无需先安装构建依赖。需要 DSH 的 Web Client、Settings 和 WebGL；当前背景适配面向 `0.2.1-rc.5`，其他版本未保证兼容。
-
-独立仓库从0.7.0快照开始。早期0.4.0分层版保留在[原实验仓库的备份提交](https://github.com/rUrU516/dsh-whaleling/commit/4dbf3ed)。
+Dot Field 的视觉方向参考 [React Bits 的效果介绍](https://www.reactbits.dev/backgrounds/dot-field)。这里是独立原创的 Canvas2D 透镜点阵实现，**不是原组件的逐像素复刻或默认代码移植**；没有引入它的依赖或源码。其他新效果与磁带封面也为原创。
 
 ## 使用
 
-打开 DSH **设置 → 海面外观**（位于 Agent 预设之后、插件市场之前）：
+打开 DSH **设置 → 背景磁带**（原来的海面外观入口）：
 
-页面主体是一整片真实水面，六个带原创SVG图标与短标签的浮标分布其上，默认全部收起：
+1. 在抽屉里选一盘磁带，舞台立即试听，**不会改动正在使用的背景**。
+2. 打开一个小调音控件，边看效果边调整；没有整页常驻参数表。
+3. 点击 **插入使用**，将选中的磁带与参数一起保存并应用。
+4. 每盘磁带记住自己的参数，切回来仍是上次的模样。
 
-| 浮标 | 标志 | 对应参数 |
-|---|---|---|
-| 水色 | 调色盘+当前色点 | 六预设色/自定义色 |
-| 日光 | 太阳 | 亮度 |
-| 浪高 | 卷曲波峰 | 波浪强度 |
-| 浓淡 | 半透斜纹圆 | 底纹强度 |
-| 流动 | 流线箭头 | 流速 |
-| 余波 | 渐隐同心圆 | 阻尼 |
+总开关独立于磁带。恢复参数只影响当前试听，仍需插入才能保存。关闭设置不应用未提交的试听；试听不是一次隐式安装或切换。
 
-一次只展开一个就近的小控件，滑动立即看见水面变化；点空白水面、再次点浮标、按Esc或点击收起可关闭；Esc/收起把焦点还给浮标。控件在本页画布内计算位置，窄宽度下调整方向并限制边界，不使用body portal。底部只保留开关、恢复默认和保存状态。页面不再画模拟输入框，不展示多块表单。
+已有0.7.x用户升级时仍保留海面为当前磁带，旧海面8项字段不移动、不覆盖；其他磁带的默认参数独立保存。输入卡片始终是完整主题底色，背景不会透进正在书写的内容，也不把聊天文字拿去做空间扭曲。
 
-数值范围（仅供开发/说明，界面常态不列参数）：
-- 亮度：0.5–2，默认1.12。
-- 底纹强度：0–0.5，默认0.16；只影响底层Canvas，不改变文字/控件透明度。
-- 波浪强度：0–2，默认1；调整波面坡度和水痕呈现。
-- 流速：0–2，默认1；0暂停，保留当前水面。
-- 阻尼：0–1，默认0.15；越高鼠标余波越快平息，越低余波越久。实时改变模拟衰减系数（每tick保留率 `1 - 0.1*damping`），默认保留原0.985；不是物理黏度，不衰减shader持续驱动的自然涌浪。
-- 启用开关与恢复默认。
+## 获取与安装
 
-滑动时立即更新预览和真实背景，停止操作约220ms后合并成一次原子设置写入。页面显示加载/保存/只读/失败状态；保存拒绝或网络异常会提示，并回退到Host已接受的值，不假报已保存。
+```sh
+git clone --branch feat/cassette-deck https://github.com/rUrU516/dsh-ocean-surface.git
+cd dsh-ocean-surface
+```
 
-参数声明在Host插件 `Config` 的 `.volatile()` 字段，使用 DSH `configForms.get('cursor-ripples')` 和Host Settings保存。**不是浏览器localStorage**；同一profile的会话/已认证客户端共享，重启保留。模型工具 `ocean_appearance` 支持get/update/reset，与UI走相同的Host Settings路径。
+在DSH中让助手通过插件管理器安装克隆目录的绝对路径。根目录就是完整bundle，包含构建产物，无需先安装构建依赖。**本地安装链接这个目录，安装后请保留它。**
 
-## 背景层级
+包名仍是 `@local/dsh-cursor-ripples`，配置namespace仍是 `cursor-ripples`，以兼容已安装的海面配置。未发布npm，也没有开放自定义代码导入。
 
-1. 应用框架形成独立堆叠上下文。
-2. React Portal把海面节点放到框架下，绝对定位 `z-index:0`。
-3. 工作列在 `z-index:1`。正文和会话外壳透明，同片水面贯穿留白与正文；输入区外壳及原生遮罩不再覆盖。
-4. 输入卡片使用不透明的主题 `bg-layer-1` 底色，隔绝水纹和背后的聊天文字；侧栏/底部15%，非Chat视图和右侧工具保留正常背景。
-5. 原生弹窗/提示层仍在上方，设置页预览位于自己的正式内容区。
+## 安静可靠的底座
 
-鼠标事件passive，背景Canvas `pointer-events:none`，不遮挡工作组件。关闭海面开关会移除用于激活兼容CSS的属性，从而恢复原生背景。
+- 一个运行时接口：创建、尺寸、参数、指针、逐帧、释放。磁带不接触DSH上下文、聊天DOM或全局事件。
+- 一个浏览器适配层：集中管理RAF、可见性、失焦暂停、主题、减少动态效果、上下文丢失。
+- 切换磁带释放旧资源、重建画布，避免WebGL和Canvas2D复用冲突。
+- 同时只有正式背景和设置中的单个试听舞台运行；抽屉封面是静态SVG，不给每张卡分配GPU资源。
+- 安静效果在余波结束后不继续绘制；隐藏/失焦停止，减少动态效果时静态。
+- 背景画布长边最多1100px、预览600px，指针不阻断应用交互。
+- 渲染失败回退原生界面，不让装饰层盖住工作组件。
+- 选择与参数通过细粒度路径原子写入DSH Settings，不整表替换其他磁带；拒绝/异常可见并回退，不假报保存成功。
 
-## 接口与兼容性
+### 分层与兼容性
 
-设置页使用公开的 `settings.section` 扩展点，独立ID `local-ocean-appearance`，中英本地化，控件使用主题tokens，不导入私有Harness Client组件。
+设置页使用公开的 `settings.section` 扩展点。**背景仍是用户授权的、面向 DSH `0.2.1-rc.5` 的版本特定适配，不是官方稳定背景接口。** DSH升级可能需要更新这一层。
 
-**背景本身仍是用户授权的版本特定兼容适配，不是公开背景接口**：针对已读取DSH `0.2.1-rc.5`的布局/Conversation/Chat结构，React Portal + CSS选择器；没有修改DSH本体或启动另一个服务器。
+唯一的DOM适配在 `client-entry.js`：Portal进入frame底层，列在上方；正文透底，输入卡不透明。没有更改Chat几何尺寸、没有修改DSH本体、没有启动替代服务器。
 
-关键类：`.PIRFFq_frame`、三列容器、`.kiGsTW_root`、`.kiGsTW_header`、`.tnXGgG_column[data-chat-flow]`、`.kiGsTW_composerStack`。不改Chat测量几何/padding/width/margin、不操作会话数据。
-
-兼容CSS仅在框架有直属标记 `data-local-ocean-background="071"` 时生效。框架/列结构不匹配不挂载，卸载清理Portal/style/listeners/RAF/GL。**DSH升级可能需要重新适配，其他插件可能使用不同表面结构。**
-
-背景生命周期入口 `local-ocean-background-adapter-v071` 虽登记于 `shell.overlay`，可见画布实际Portal到底层，并不在组件上方盖光影。
-
-## 开发
+## 开发 / API
 
 ```sh
 node build.js
-node --test water-field.test.js appearance.test.js
+node --test *.test.js
 node --check client.js
 ```
 
-- `appearance.js`：Host/Client共享默认值与范围归一化。
-- `index.js`：Config与同源设置操作工具；schemastery为运行时peer。
-- `appearance-model.js`：实时预览状态、防抖保存、失败处理。
-- `settings-panel.js`：沉浸式浮标设置页、就近控件定位、双语文案。
-- `buoy-icons.js`：六个参数与开关/恢复/关闭的原创统一描边SVG。
-- `ocean-preview.js`：有界真实水面预览，卸载清理。
-- `client-entry.js`：背景Portal、兼容CSS和输入/绘制生命周期。
-- `water-field.js` / `water-field.test.js`：原创二维阻尼波动场及13项测试。
-- `appearance.test.js`：9项参数/保存/错误/重置/双语/浮标覆盖/定位边界测试。
-- `ocean-renderer.js`：多方向海浪、颜色/亮度/法线/反光与GL清理。
-- `build.js` / `client.js`：无构建依赖本地合并脚本与生成产物；不直接编辑产物。
-- `locale/` / `icon.svg`：中英元信息与原创光标水波图标。
+- `cassette-catalog.js`：纯数据描述、默认值、控制范围、旧配置迁移。
+- `effect-runtime.js`：四种效果通过统一runtime API实现。
+- `effect-surface.js`：唯一浏览器调度/生命周期适配器。
+- `deck-panel.js`：抽屉、封面、试听/插入、局部调音、双语界面。
+- `appearance-model.js`：Host-backed保存与失败回滚。
+- `index.js`：持久化Config和同源设置工具。
+- `client-entry.js`：正式设置入口与DSH底层适配。
+- `water-field.js` / `ocean-renderer.js`：原海面磁带的数值模拟与GPU绘制。
+- `build.js` / `client.js`：零额外依赖的本地模块合并与产物，不直接改产物。
 
-React/react-dom来自浏览器模块表，无额外React实例。背景30fps、长边最多1100px、模拟长边约320格；设置预览最多600px、模拟宽160格，只在设置页挂载时分配。失焦/隐藏暂停，减少动态效果时静态水面，WebGL失败显示不可用提示。
+完整的 **[Cassette API v1](./docs/cassette-api.md)** 说明了生命周期与数据边界。当前为内置效果接口，**本版不支持用户导入磁带、远程脚本、eval或任意JS执行**，未来扩展不需要让效果依赖DSH内部结构。
 
-## 部署与核验
+### Agent入口
 
-通过 `plugin_manager` 安装本目录，工具提示已有包时remove再install；关闭/卸载本插件撤销背景。0.7.1安装返回applied/warnings[]，Host Config全部字段保留，真实Client背景入口 `local-ocean-background-adapter-v071` 已确认active。Host在可选的 `clientModules` 服务可用时调用 `rebuilt` 发布已完成的Client构建，避免仅Host更新而页面继续旧代码；仍需检查live Client版本，不能只看安装成功。linked目录迁移时当前DSH可能缓存旧路径，必要时需重启DSH重新解析。
+`background_tapes`：list/get/insert/update/reset/enable；list返回支持的磁带、默认值和范围。调整未插入的磁带不会擅自切换当前背景。兼容工具 `ocean_appearance` 只编辑原海面参数。两者与UI共用Host Settings，不使用浏览器localStorage。
 
-构建、JS语法、22项测试、manifest资源/双语文案检查通过；经真实工具读取观察到面板选色已进入Host配置；同值亮度写入成功，未重置用户正在选择的配色。
+### 更新与回退
 
-**没有浏览器控制，不能代替用户验收设置页的实际排版、GPU画面、浅深色效果与图标渲染。** 插槽active不等于所有控件实际视觉已核验。沿用原创SVG图标，无默认模板资源。
+分支起点保留0.7.1输入框修复快照 `81b722e`，主分支与正式v0.7.0 Release不变。需要回退时，在另一个目录检出快照，通过DSH插件管理器安装该目录；新磁带字段可忽略，原海面参数仍在原位置。
 
-高度场思路参考 [WebGL Water](https://madebyevan.com/webgl-water/) 与 [jQuery Ripples](https://github.com/sirxemic/jquery.ripples)，未引入其代码、图片或运行依赖。
+Host在可选的 `clientModules` 服务可用时发布已完成的Client构建；仍需用live Slots确认版本，安装applied不等于页面更新。linked目录迁移可能被当前DSH进程缓存，需处理旧路径或重启重新解析。
+
+## 验证边界
+
+有自动化数学、配置、保存与资源检查；安装后核验Host Config、工具和实时Client入口。**没有浏览器控制，不能将slot active当成设置排版、浅深色、GPU效果或图标的视觉验收**，实际体验仍请在当前GUI确认。
+
+海面高度场原理参考 [WebGL Water](https://madebyevan.com/webgl-water/) 与 [jQuery Ripples](https://github.com/sirxemic/jquery.ripples)，未引入它们的代码、图片或依赖。早期海面实验见[原仓库备份](https://github.com/rUrU516/dsh-whaleling/commit/4dbf3ed)。

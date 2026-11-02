@@ -21,73 +21,142 @@ function tintRGB(tint) {
   return [1, 3, 5].map((offset) => parseInt(tint.slice(offset, offset + 2), 16) / 255);
 }
 
-/** Optimistic live preview + debounced, serialized Host-backed Config form writes. */
-function createAppearanceModel(form, initial, normalize, failureMessage) {
-  let settings = normalize(initial);
-  let pending = {};
-  let timer = null;
-  let writing = false;
-  let disposed = false;
-  let error = '';
-  let snapshot;
-  const listeners = new Set();
-  function publish() {
-    const state = form.getSnapshot();
-    snapshot = { settings, saving: writing || Object.keys(pending).length > 0,
-      error, writable: state.writable, loaded: state.status !== 'loading' };
-    for (const listener of listeners) listener();
+
+/** Deck API v1. Descriptors are data only; renderers never receive DSH or a DOM root. */
+const CASSETTE_API_VERSION = 1;
+const CASSETTES = Object.freeze([
+  { id:'dot-field', number:'01', name:{zh:'引力点阵',en:'Dot Field'}, subtitle:{zh:'在指尖，轻轻弯曲的空间。',en:'A little gravity, at your fingertips.'},
+    mood:{zh:'透镜 · 安静',en:'LENS / QUIET'}, colors:['#7284df','#af83ba'], renderer:'2d', continuous:false,
+    defaults:{tint:'#8b91d4',opacity:.38,strength:.65,scale:1,speed:.45},
+    controls:[['opacity',0,.65,.01],['strength',0,1.5,.05],['scale',.6,1.8,.05]] },
+  { id:'ripple', number:'02', name:{zh:'空间薄膜',en:'Space Membrane'}, subtitle:{zh:'轻触一下，余韵慢慢散开。',en:'Touch the stillness. Watch it settle.'},
+    mood:{zh:'涟漪 · 触发',en:'RIPPLE / ON TOUCH'}, colors:['#7ca8ad','#9b9bbd'], renderer:'2d', continuous:false,
+    defaults:{tint:'#85a7b1',opacity:.28,strength:.6,scale:1,speed:.65},
+    controls:[['opacity',0,.65,.01],['strength',0,1.5,.05],['speed',.2,1.5,.05]] },
+  { id:'contour', number:'03', name:{zh:'风的等高线',en:'Quiet Contours'}, subtitle:{zh:'几缕细线，慢于呼吸。',en:'A few fine lines. Slower than a breath.'},
+    mood:{zh:'线条 · 缓流',en:'LINES / SLOW DRIFT'}, colors:['#b7a486','#89a5a0'], renderer:'2d', continuous:true,
+    defaults:{tint:'#a7a18a',opacity:.2,strength:.45,scale:1,speed:.3},
+    controls:[['opacity',0,.65,.01],['strength',0,1.5,.05],['speed',0,1.5,.05]] },
+  { id:'ocean', number:'04', name:{zh:'深海来信',en:'Ocean Surface'}, subtitle:{zh:'熟悉的水面，收进一盘磁带。',en:'The original ocean, kept on tape.'},
+    mood:{zh:'海面 · 连续',en:'WATER / CONTINUOUS'}, colors:['#4896a6','#577d98'], renderer:'webgl', continuous:true,
+    defaults:APPEARANCE_DEFAULTS,
+    controls:[['brightness',.5,2,.01],['opacity',0,.5,.01],['waveStrength',0,2,.05],['speed',0,2,.05],['damping',0,1,.01]] },
+]);
+function getCassette(id) { return CASSETTES.find(item=>item.id===id) || CASSETTES.find(item=>item.id==='ocean'); }
+function normalizeCassetteParams(id, input = {}) {
+  const descriptor = getCassette(id);
+  if (descriptor.id==='ocean') return normalizeAppearance(input);
+  const result={...descriptor.defaults};
+  if (typeof input.tint==='string' && /^#[\da-f]{6}$/i.test(input.tint)) result.tint=input.tint.toLowerCase();
+  const ranges={opacity:[0,.65],strength:[0,1.5],scale:[.6,1.8],speed:[0,1.5]};
+  for (const [key,[min,max]] of Object.entries(ranges)) if(typeof input[key]==='number' && Number.isFinite(input[key])) result[key]=Math.max(min,Math.min(max,input[key]));
+  return result;
+}
+const DECK_DEFAULTS=Object.freeze({...APPEARANCE_DEFAULTS,cassette:'ocean',cassetteSettings:{}});
+function normalizeDeckSettings(input={}) {
+  const source=input && typeof input==='object'?input:{};
+  const cassette=CASSETTES.some(item=>item.id===source.cassette)?source.cassette:'ocean';
+  const cassetteSettings={};
+  for(const item of CASSETTES) {
+    if(item.id==='ocean') continue; // Existing ocean fields stay in their original persisted location.
+    const saved=source.cassetteSettings?.[item.id];
+    if(saved && typeof saved==='object') cassetteSettings[item.id]=normalizeCassetteParams(item.id,saved);
   }
-  function accept() {
-    const state = form.getSnapshot();
-    if (!writing && !Object.keys(pending).length && state.status === 'ready') settings = normalize(state.value);
+  return {...normalizeAppearance(source),cassette,cassetteSettings};
+}
+function getCassetteParams(settings,id=settings.cassette) {
+  return normalizeCassetteParams(id,id==='ocean'?settings:settings.cassetteSettings?.[id]);
+}
+function cassettePatch(settings,id,params) {
+  if(!CASSETTES.some(item=>item.id===id)) throw new Error(`Unknown cassette: ${id}`);
+  const normalized=normalizeCassetteParams(id,params);
+  if(id==='ocean'){
+    const {enabled,...ocean}=normalized; // Global power is never part of a tape insertion.
+    return {cassette:id,...ocean};
+  }
+  return {cassette:id,cassetteSettings:{...settings.cassetteSettings,[id]:normalized}};
+}
+
+
+/** One intent, one batch. Nested tape writes never replace the whole drawer. */
+function deckPatchOperations(patch, previous) {
+  const next=normalizeDeckSettings({...previous,...patch});
+  const ops=[];
+  for(const key of Object.keys(patch)){
+    if(key==='cassetteSettings'){
+      for(const [id,params]of Object.entries(next.cassetteSettings)){
+        if(patch.cassette===id || JSON.stringify(params)!==JSON.stringify(previous.cassetteSettings?.[id]))
+          ops.push({op:'set',path:['cassetteSettings',id],value:params});
+      }
+    }else if(key in next)ops.push({op:'set',path:[key],value:next[key]});
+  }
+  return ops;
+}
+
+/** Optimistic preview with serialized atomic path mutations; unrelated remote fields are preserved. */
+function applySettingsOps(value, ops) {
+  const result=structuredClone(value||{});
+  for(const {path,value:next} of ops){
+    let parent=result;
+    for(const key of path.slice(0,-1)){
+      if(!parent[key]||typeof parent[key]!=='object')parent[key]={};
+      parent=parent[key];
+    }
+    parent[path.at(-1)]=structuredClone(next);
+  }
+  return result;
+}
+function createAppearanceModel(form, initial, normalize, failureMessage, toOperations) {
+  let settings=normalize(initial),pending=new Map(),timer=null,writing=false,disposed=false,error='',snapshot;
+  const listeners=new Set();
+  const operations=patch=>Object.entries(patch).map(([key,value])=>({op:'set',path:[key],value}));
+  function publish(){
+    const state=form.getSnapshot();
+    snapshot={settings,saving:writing||pending.size>0,error,writable:state.writable,loaded:state.status!=='loading'};
+    for(const listener of listeners)listener();
+  }
+  function accepted(){return form.getSnapshot().value||initial;}
+  function accept(){
+    if(!writing&&form.getSnapshot().status==='ready')settings=normalize(applySettingsOps(accepted(),[...pending.values()]));
     publish();
   }
-  async function flush() {
-    timer = null;
-    if (disposed || writing || !Object.keys(pending).length) return;
-    const patch = pending;
-    pending = {};
-    writing = true;
-    publish();
-    try {
-      const ok = await form.mutate(Object.entries(patch).map(([key, value]) => ({ op: 'set', path: [key], value })));
-      if (!ok) throw new Error(failureMessage());
-      error = '';
-    } catch (reason) {
-      error = reason instanceof Error ? reason.message : String(reason);
-      // No false "saved": roll back the failed batch to accepted Host state.
-      settings = normalize({ ...(form.getSnapshot().value || initial), ...pending });
-    } finally {
-      writing = false;
-      if (disposed) return;
-      if (Object.keys(pending).length) timer = setTimeout(flush, 120);
-      else if (!error && form.getSnapshot().status === 'ready') settings = normalize(form.getSnapshot().value);
+  async function flush(){
+    timer=null;
+    if(disposed||writing||!pending.size)return;
+    const batch=[...pending.values()];pending=new Map();writing=true;publish();
+    try{
+      const ok=await form.mutate(batch);
+      if(!ok)throw new Error(failureMessage());
+      error='';
+    }catch(reason){error=reason instanceof Error?reason.message:String(reason);}
+    finally{
+      writing=false;
+      if(disposed){
+        if(pending.size){const trailing=[...pending.values()];pending.clear();try{await form.mutate(trailing);}catch{ /* No subscriber remains to report unload failures. */ }}
+        return;
+      }
+      settings=normalize(applySettingsOps(accepted(),[...pending.values()]));
+      if(pending.size)timer=setTimeout(flush,120);
       publish();
     }
   }
-  const unsubscribe = form.subscribe(accept);
-  accept();
+  const unsubscribe=form.subscribe(accept);accept();
   return {
-    getSnapshot: () => snapshot,
-    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    update(patch) {
-      if (disposed || !form.getSnapshot().writable) return;
-      const accepted = normalize({ ...settings, ...patch });
-      for (const key of Object.keys(patch)) if (key in accepted) pending[key] = accepted[key];
-      settings = accepted;
-      error = '';
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(flush, 220);
-      publish();
+    getSnapshot:()=>snapshot,
+    subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
+    update(patch){
+      if(disposed||!form.getSnapshot().writable||form.getSnapshot().status!=='ready')return;
+      const next=normalize({...settings,...patch});
+      const ops=toOperations?toOperations(patch,settings):operations(Object.fromEntries(Object.keys(patch).filter(key=>key in next).map(key=>[key,next[key]])));
+      for(const op of ops)pending.set(JSON.stringify(op.path),op);
+      settings=normalize(applySettingsOps(settings,ops));error='';
+      if(timer)clearTimeout(timer);timer=setTimeout(flush,220);publish();
     },
-    reset() { this.update(initial); },
-    dispose() {
-      // Flush the last deliberate edit on unload, rather than lose a quick close.
-      if (timer) clearTimeout(timer);
-      if (!writing && Object.keys(pending).length) void flush();
-      disposed = true;
-      unsubscribe();
-      listeners.clear();
+    reset(){this.update(initial);},
+    dispose(){
+      if(timer)clearTimeout(timer);
+      if(!writing&&pending.size)void flush();
+      disposed=true;unsubscribe();listeners.clear();
     },
   };
 }
@@ -388,649 +457,1024 @@ function createOceanRenderer(canvas, field) {
 }
 
 
-/** The real renderer at a bounded resolution, mounted only while settings are open. */
-function createOceanPreview(React, ctx, t) {
-  const h = React.createElement;
-  return function OceanPreview({ settings, immersive = false }) {
-    const ref = React.useRef(null);
-    const current = React.useRef(settings);
-    const redraw = React.useRef(() => {});
-    const [error, setError] = React.useState(false);
-    current.current = settings;
-    React.useEffect(() => { redraw.current(); }, [settings]);
-    React.useEffect(() => {
-      const canvas = ref.current;
-      let field, renderer, raf = 0, last = 0, time = 0, accumulator = 0;
-      let visible = !document.hidden, focused = document.hasFocus(), lastPointer = 0;
-      const motion = matchMedia('(prefers-reduced-motion: reduce)');
-      function stop() { cancelAnimationFrame(raf); raf = 0; last = 0; accumulator = 0; }
-      function draw(now) {
-        raf = 0;
-        if (!renderer) return;
-        if (!last || now - last >= 1000 / 30 - 1) {
-          const elapsed = last ? Math.min(.08, (now - last) / 1000) : 1 / 30;
-          last = now;
-          const s = current.current;
-          if (s.enabled && !motion.matches) {
-            accumulator += elapsed * s.speed;
-            while (accumulator >= 1 / 60) { field.step(s.damping); accumulator -= 1 / 60; }
-            time += elapsed * s.speed;
-          }
-          renderer.draw(time, ctx.theme.getTheme().active.colorScheme === 'dark', s);
-        }
-        const s = current.current;
-        if (s.enabled && s.speed > 0 && !motion.matches && visible && focused) raf = requestAnimationFrame(draw);
-      }
-      function start() { if (!raf && renderer && visible && focused) raf = requestAnimationFrame(draw); }
-      function resize() {
-        stop(); renderer?.dispose(); renderer = null;
-        const rect = canvas.getBoundingClientRect();
-        canvas.width = Math.max(1, Math.min(600, Math.round(rect.width)));
-        canvas.height = Math.max(1, Math.round(canvas.width * rect.height / Math.max(1, rect.width)));
-        field = new WaterField(160, Math.max(32, Math.round(160 * rect.height / Math.max(1, rect.width))));
-        try { renderer = createOceanRenderer(canvas, field); setError(false); start(); }
-        catch { setError(true); }
-      }
-      function pointer(event) {
-        if (!renderer || !current.current.enabled || motion.matches || current.current.speed === 0) return;
-        const now = performance.now();
-        if (event.type === 'pointermove' && now - lastPointer < 20) return;
-        lastPointer = now;
-        const box = canvas.getBoundingClientRect();
-        field.disturb((event.clientX - box.left) / box.width * field.width,
-          (event.clientY - box.top) / box.height * field.height, 3,
-          event.type === 'pointerdown' ? .65 : .17);
-        start();
-      }
-      const refresh = () => { stop(); start(); };
-      const visibility = () => { visible = !document.hidden; refresh(); };
-      const blur = () => { focused = false; stop(); };
-      const focus = () => { focused = true; start(); };
-      const lost = event => { event.preventDefault(); stop(); setError(true); };
-      const observer = new ResizeObserver(resize);
-      observer.observe(canvas);
-      canvas.addEventListener('pointermove', pointer, { passive: true });
-      canvas.addEventListener('pointerdown', pointer, { passive: true });
-      canvas.addEventListener('webglcontextlost', lost);
-      canvas.addEventListener('webglcontextrestored', resize);
-      document.addEventListener('visibilitychange', visibility);
-      window.addEventListener('blur', blur);
-      window.addEventListener('focus', focus);
-      motion.addEventListener('change', refresh);
-      const offTheme = ctx.on('theme/change', refresh);
-      redraw.current = refresh;
-      resize();
-      return () => {
-        redraw.current = () => {};
-        observer.disconnect(); stop(); renderer?.dispose(); offTheme();
-        canvas.removeEventListener('pointermove', pointer);
-        canvas.removeEventListener('pointerdown', pointer);
-        canvas.removeEventListener('webglcontextlost', lost);
-        canvas.removeEventListener('webglcontextrestored', resize);
-        document.removeEventListener('visibilitychange', visibility);
-        window.removeEventListener('blur', blur); window.removeEventListener('focus', focus);
-        motion.removeEventListener('change', refresh);
-      };
-    }, []);
-    return h('div', { style: { position: 'relative', height: '100%', background: 'var(--dsw-alias-bg-base)', overflow: 'hidden', borderRadius: immersive ? 0 : 14 } },
-      h('canvas', { ref, 'aria-label': t('oceanSettings.previewLabel'), style: { display: 'block', width: '100%', height: '100%', opacity: settings.enabled && !error ? settings.opacity : 0 } }),
-      error ? h('p', { role: 'status', style: { position: 'absolute', left: 24, right: 24, bottom: 68, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, t('oceanSettings.previewError')) : null);
-  };
+const TAU = Math.PI * 2;
+const STEP = 1 / 60;
+const RIPPLE_LIFETIME = 2;
+const finite = (value, fallback = 0) => Number.isFinite(value) ? value : fallback;
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+/** CSS coordinates remain unchanged; only the backing store is resolution limited. */
+function effectSize(width, height, dpr = 1, maxResolution = 1100) {
+  width = Math.max(0, finite(width));
+  height = Math.max(0, finite(height));
+  if (!width || !height) return { width, height, pixelWidth: 0, pixelHeight: 0, scaleX: 0, scaleY: 0 };
+  const limit = clamp(finite(maxResolution, 1100), 1, 1100);
+  const ratio = Math.min(Number.isFinite(dpr) && dpr > 0 ? dpr : 1, 1.5, limit / Math.max(width, height));
+  const pixelWidth = Math.max(1, Math.round(width * ratio));
+  const pixelHeight = Math.max(1, Math.round(height * ratio));
+  return { width, height, pixelWidth, pixelHeight, scaleX: pixelWidth / width, scaleY: pixelHeight / height };
 }
 
-function createBuoyIcon(React) {
-  const h = React.createElement;
-  const path = (key, d, props = {}) => h('path', { key, d, ...props });
-  const circle = (key, cx, cy, r, props = {}) =>
-    h('circle', { key, cx, cy, r, ...props });
+/** Compact, smooth radial lens. Zero outside its support, including at the seam. */
+function lensOffset(x, y, px, py, radius, strength) {
+  if (!(radius > 0)) return [0, 0];
+  const dx = x - px;
+  const dy = y - py;
+  const q = Math.hypot(dx, dy) / radius;
+  if (q >= 1) return [0, 0];
+  const weight = (1 - q * q) ** 3 * strength * .32;
+  return [dx * weight, dy * weight];
+}
 
-  return function BuoyIcon({ kind, value }) {
-    let shapes;
+/** Bounded radial displacement; age is real seconds, not speed-scaled time. */
+function rippleDisplacement(distance, age, speed, strength) {
+  if (age < 0 || age >= RIPPLE_LIFETIME || speed <= 0) return 0;
+  const radius = age * (100 + 100 * speed);
+  const band = (distance - radius) / 22;
+  return Math.sin(band * 2) * Math.exp(-band * band) * (1 - age / RIPPLE_LIFETIME) ** 2 * 9 * strength;
+}
 
-    switch (kind) {
-      case 'tint':
-        shapes = [
-          path('palette', 'M12 3a9 9 0 1 0 0 18h1.3a2.2 2.2 0 0 0 1.6-3.7 1.4 1.4 0 0 1 1-2.4H18a3 3 0 0 0 3-3C21 6.9 17 3 12 3Z'),
-          circle('dot-a', 7.5, 10, 0.9, { fill: 'currentColor', strokeWidth: 0 }),
-          circle('dot-b', 11, 6.8, 0.9, { fill: 'currentColor', strokeWidth: 0 }),
-          circle('dot-c', 15.6, 8.1, 0.9, { fill: 'currentColor', strokeWidth: 0 }),
-        ];
-        break;
-      case 'brightness':
-        shapes = [
-          circle('sun', 12, 12, 4),
-          path('rays', 'M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4'),
-        ];
-        break;
-      case 'opacity':
-        shapes = [
-          circle('outline', 12, 12, 9),
-          path('divide', 'M12 3v18'),
-          path('hatching', 'M12 6l2.3-2.3M12 10l5.2-5.2M12 14l7.2-7.2M12 18l8.7-8.7M13.1 20.9l7.8-7.8M18 18l1.8-1.8', { opacity: 0.6 }),
-        ];
-        break;
-      case 'waveStrength':
-        shapes = [
-          path('crest', 'M3 18c2.8 0 3.7-2.7 4.9-5.7C9.4 8.4 11.3 5 15.3 5c3.1 0 5.2 1.9 5.2 4.5 0 2.1-1.5 3.6-3.4 3.6-1.9 0-3.2-1.4-2.8-3.3-2.5 1.1-3.1 4.6-1.1 6.7 1.1 1.1 2.7 1.5 4.8 1.5h3'),
-        ];
-        break;
-      case 'speed':
-        shapes = [
-          path('upper-flow', 'M3 8h17M16 4l4 4-4 4'),
-          path('lower-flow', 'M3 17h14M13 13l4 4-4 4'),
-        ];
-        break;
-      case 'damping':
-        shapes = [
-          circle('near-ripple', 10, 12, 3, { opacity: 1 }),
-          circle('middle-ripple', 10, 12, 6, { opacity: 0.5 }),
-          circle('far-ripple', 10, 12, 9, { opacity: 0.22 }),
-          path('stop', 'M9 12h2'),
-        ];
-        break;
-      case 'power':
-        shapes = [
-          path('switch', 'M12 3v9'),
-          path('ring', 'M6.3 5.9a8 8 0 1 0 11.4 0'),
-        ];
-        break;
-      case 'reset':
-        shapes = [
-          path('return', 'M3 4v6h6'),
-          path('loop', 'M3.3 10a9 9 0 1 1 1.5 7'),
-        ];
-        break;
-      case 'close':
-        shapes = [path('cross', 'M6 6l12 12M18 6 6 18')];
-        break;
-      default:
-        shapes = [];
+/** The original pointer trail: 16ms throttle, 120ms continuity, 7 CSS px sampling. */
+function oceanPointerTrail(previous, point, width, height, fieldWidth, fieldHeight, click) {
+  if (!click && previous && point.time - previous.time >= 0 && point.time - previous.time < .016) return null;
+  const from = previous && point.time >= previous.time && point.time - previous.time < .12 ? previous : point;
+  const dx = (point.x - from.x) * width;
+  const dy = (point.y - from.y) * height;
+  const count = click ? 1 : clamp(Math.ceil(Math.hypot(dx, dy) / 7), 1, 20);
+  const scale = fieldWidth / width;
+  const samples = [];
+  for (let index = 1; index <= count; index++) {
+    const t = index / count;
+    samples.push({
+      x: (from.x + (point.x - from.x) * t) * fieldWidth,
+      y: (from.y + (point.y - from.y) * t) * fieldHeight,
+      radius: Math.max(1.8, (click ? 24 : 14) * scale),
+      strength: click ? .65 : .17,
+    });
+  }
+  return samples;
+}
+
+/** CPU-only animation state; exported to test scheduling without a fake canvas. */
+function createEffectState(id) {
+  return { id, phase: 0, time: 0, accumulator: 0, ticks: 0, pointer: null,
+    cursor: { x: .5, y: .5, amount: 0 }, rings: [], lastRipple: null };
+}
+
+function updateEffectPointer(state, point, params, reducedMotion, width, height) {
+  if (point?.type === 'leave') {
+    state.pointer = null;
+    state.lastRipple = null;
+    return;
+  }
+  if (!point || !['move', 'down'].includes(point.type) || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+  if (point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1 || reducedMotion) return;
+  const next = { x: point.x, y: point.y, time: finite(point.time, state.time) };
+  state.pointer = next;
+  if (state.id !== 'ripple' || params.speed <= 0 || params.strength <= 0) return;
+  const previous = state.lastRipple;
+  const elapsed = previous ? next.time - previous.time : Infinity;
+  const distance = previous ? Math.hypot((next.x - previous.x) * width, (next.y - previous.y) * height) : Infinity;
+  if (point.type !== 'down' && elapsed >= 0 && (elapsed < .08 || distance < 8)) return;
+  state.rings.push({ x: next.x, y: next.y, age: 0, strength: point.type === 'down' ? 1 : .45 });
+  if (state.rings.length > 8) state.rings.shift();
+  state.lastRipple = next;
+}
+
+/** Advances state only; ticks tells the ocean adapter exactly how many 60Hz steps to run. */
+function advanceEffectState(state, dt, params, reducedMotion = false) {
+  dt = Math.max(0, finite(dt));
+  state.ticks = 0;
+  if (reducedMotion) {
+    state.accumulator = 0;
+    state.cursor.amount = 0;
+    state.pointer = null;
+    state.rings.length = 0;
+    state.lastRipple = null;
+    return false;
+  }
+  if (state.id === 'ocean') {
+    if (params.speed <= 0) { state.accumulator = 0; return false; }
+    // Preserve the old adapter's .08s catch-up cap and fixed 60Hz damping law.
+    const elapsed = Math.min(dt, .08) * params.speed;
+    state.phase += elapsed;
+    state.accumulator += elapsed;
+    state.ticks = Math.floor((state.accumulator + 1e-12) / STEP);
+    state.accumulator = Math.max(0, state.accumulator - state.ticks * STEP);
+    return true;
+  }
+  if (state.id === 'ripple') {
+    if (params.speed <= 0 || params.strength <= 0) state.rings.length = 0;
+    for (const ring of state.rings) ring.age += dt;
+    state.rings = state.rings.filter(ring => ring.age < RIPPLE_LIFETIME - 1e-9);
+    return state.rings.length > 0;
+  }
+  const cursor = state.cursor;
+  const target = state.pointer;
+  const amount = target && params.strength > 0 ? 1 : 0;
+  // A stationary pointer settles completely: dot-field must not keep an idle RAF alive.
+  const ease = 1 - Math.exp(-dt * 11);
+  cursor.amount += (amount - cursor.amount) * ease;
+  if (target) {
+    cursor.x += (target.x - cursor.x) * ease;
+    cursor.y += (target.y - cursor.y) * ease;
+  }
+  const near = Math.abs(cursor.amount - amount) < .001 && (!target || Math.hypot(cursor.x - target.x, cursor.y - target.y) < .0001);
+  if (near || (state.id === 'contour' && params.speed <= 0)) {
+    cursor.amount = amount;
+    if (target) { cursor.x = target.x; cursor.y = target.y; }
+  }
+  if (state.id === 'contour') {
+    state.phase += Math.min(dt, .08) * params.speed;
+    return params.speed > 0;
+  }
+  return !near;
+}
+
+function color(tint, dark, alpha, blue = false) {
+  const rgb = [1, 3, 5].map(offset => parseInt(tint.slice(offset, offset + 2), 16));
+  // A restrained blue/violet variation of the chosen tint, not an opaque backdrop.
+  if (blue) { rgb[0] *= .82; rgb[1] *= 1.02; rgb[2] *= 1.1; }
+  const lift = dark ? 1.12 : .8;
+  return `rgba(${rgb.map(value => Math.round(clamp(value * lift, 0, 255))).join(',')},${alpha})`;
+}
+
+function drawDots(ctx, size, state, params, dark) {
+  const { width, height } = size;
+  const gap = 25 * params.scale;
+  const radius = Math.max(80, Math.min(width, height) * .24);
+  const px = state.cursor.x * width;
+  const py = state.cursor.y * height;
+  for (let group = 0; group < 2; group++) {
+    ctx.fillStyle = color(params.tint, dark, dark ? .72 : .6, group === 1);
+    ctx.beginPath();
+    for (let row = 0, y = gap / 2; y < height; row++, y += gap) {
+      for (let col = 0, x = gap / 2; x < width; col++, x += gap) {
+        if ((row + col) % 2 !== group) continue;
+        const [dx, dy] = lensOffset(x, y, px, py, radius, state.cursor.amount * params.strength);
+        const r = .85 * Math.min(params.scale, 1.3);
+        ctx.moveTo(x + dx + r, y + dy);
+        ctx.arc(x + dx, y + dy, r, 0, TAU);
+      }
     }
+    ctx.fill();
+  }
+}
 
-    return h('svg', {
-      width: 24,
-      height: 24,
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      strokeWidth: 1.6,
-      strokeLinecap: 'round',
-      strokeLinejoin: 'round',
-      'aria-hidden': true,
-      focusable: false,
-    }, ...shapes);
+function ripplePoint(x, y, size, state, params) {
+  let dx = 0;
+  let dy = 0;
+  for (const ring of state.rings) {
+    const rx = x - ring.x * size.width;
+    const ry = y - ring.y * size.height;
+    const distance = Math.hypot(rx, ry);
+    if (distance < .001) continue;
+    const offset = rippleDisplacement(distance, ring.age, params.speed, params.strength * ring.strength);
+    dx += rx / distance * offset;
+    dy += ry / distance * offset;
+  }
+  return [x + dx, y + dy];
+}
+
+function drawRipple(ctx, size, state, params, dark) {
+  const { width, height } = size;
+  const gap = 42 * params.scale;
+  ctx.strokeStyle = color(params.tint, dark, dark ? .24 : .18);
+  ctx.lineWidth = .6;
+  ctx.beginPath();
+  for (let x = gap / 2; x < width; x += gap) {
+    for (let y = 0; y <= height + 8; y += 8) {
+      const p = ripplePoint(x, Math.min(y, height), size, state, params);
+      if (y === 0) ctx.moveTo(...p); else ctx.lineTo(...p);
+    }
+  }
+  for (let y = gap / 2; y < height; y += gap) {
+    for (let x = 0; x <= width + 8; x += 8) {
+      const p = ripplePoint(Math.min(x, width), y, size, state, params);
+      if (x === 0) ctx.moveTo(...p); else ctx.lineTo(...p);
+    }
+  }
+  ctx.stroke();
+  for (const ring of state.rings) {
+    const alpha = .34 * params.strength * ring.strength * (1 - ring.age / RIPPLE_LIFETIME) ** 2;
+    ctx.strokeStyle = color(params.tint, dark, alpha);
+    ctx.lineWidth = .75;
+    ctx.beginPath();
+    ctx.arc(ring.x * width, ring.y * height, ring.age * (100 + 100 * params.speed), 0, TAU);
+    ctx.stroke();
+  }
+}
+
+function drawContours(ctx, size, state, params, dark) {
+  const { width, height } = size;
+  const base = Math.min(width, height);
+  const phase = state.phase * .16;
+  const px = state.cursor.x * width;
+  const py = state.cursor.y * height;
+  ctx.strokeStyle = color(params.tint, dark, dark ? .42 : .34);
+  ctx.lineWidth = .7;
+  ctx.beginPath();
+  // Seven irregular level loops: small slow deformations, no texture or noise library.
+  for (let line = 0; line < 7; line++) {
+    const radius = base * (.16 + line * .105) * params.scale;
+    for (let index = 0; index <= 128; index++) {
+      const angle = index / 128 * TAU;
+      const shape = 1 + .075 * Math.sin(angle * 3 + phase + line * .17)
+        + .045 * Math.cos(angle * 5 - phase * .7);
+      const x = width * .49 + Math.cos(angle) * radius * shape * 1.35;
+      const y = height * .54 + Math.sin(angle) * radius * shape * .78;
+      const [dx, dy] = lensOffset(x, y, px, py, Math.max(100, base * .38), params.strength * state.cursor.amount);
+      if (!index) ctx.moveTo(x + dx, y + dy); else ctx.lineTo(x + dx, y + dy);
+    }
+  }
+  ctx.stroke();
+}
+
+/**
+ * One canvas, one context type, no events/RAF/DOM/DSH. Call resize with CSS pixels,
+ * then frame with dt/time in seconds. Wake the external scheduler after every
+ * resize/update/pointer; false means idle, not disposed. params updates are patches.
+ * cassette is an id or catalog descriptor and is immutable for this runtime.
+ * CSS sizing, opacity, visibility, context loss and canvas replacement belong outside.
+ */
+function createEffectRuntime({ canvas, cassette, params, dark = false, reducedMotion = false, onError, maxResolution = 1100 } = {}) {
+  const descriptor = getCassette(typeof cassette === 'string' ? cassette : cassette?.id);
+  let settings = normalizeCassetteParams(descriptor.id, params && typeof params === 'object' ? params : {});
+  const state = createEffectState(descriptor.id);
+  let size = effectSize(0, 0);
+  let ctx = null;
+  let field = null;
+  let renderer = null;
+  let lastOceanPointer = null;
+  let disposed = false;
+  let failed = false;
+  let reported = false;
+  let dirty = true;
+
+  function report(error) {
+    if (reported) return;
+    reported = true;
+    try { if (typeof onError === 'function') onError(error instanceof Error ? error : new Error(String(error))); } catch { /* Reporting cannot break cleanup. */ }
+  }
+  function release() {
+    const current = renderer;
+    renderer = null;
+    field = null;
+    ctx = null;
+    lastOceanPointer = null;
+    canvas = null;
+    state.rings.length = 0;
+    state.pointer = null;
+    if (current) current.dispose();
+  }
+  function fail(error) {
+    failed = true;
+    report(error);
+    try { release(); } catch (cleanupError) { report(cleanupError); }
+  }
+  function ensureResources() {
+    if (ctx || renderer) return;
+    if (!canvas || typeof canvas.getContext !== 'function') throw new Error('An effect runtime requires a canvas with getContext().');
+    if (descriptor.id === 'ocean') {
+      const cell = Math.max(size.width, size.height) / 320;
+      field = new WaterField(Math.max(32, Math.round(size.width / cell)), Math.max(32, Math.round(size.height / cell)));
+      renderer = createOceanRenderer(canvas, field);
+    } else {
+      ctx = canvas.getContext('2d', { alpha: true });
+      if (!ctx) throw new Error('Canvas2D unavailable; background artwork disabled.');
+    }
+  }
+  return {
+    resize(width, height, dpr = 1) {
+      if (disposed || failed) return;
+      const nextSize = effectSize(width, height, dpr, maxResolution);
+      const geometryChanged = size.width !== nextSize.width || size.height !== nextSize.height;
+      size = nextSize;
+      dirty = true;
+      lastOceanPointer = null;
+      state.lastRipple = null;
+      if (!size.pixelWidth || !size.pixelHeight) return;
+      try {
+        if (!canvas) throw new Error('An effect runtime requires a canvas.');
+        if (renderer && geometryChanged) {
+          // Rebuild size-dependent simulation/GL resources on the SAME canvas/context.
+          const previous = renderer;
+          renderer = null;
+          field = null;
+          state.accumulator = 0;
+          previous.dispose();
+        }
+        if (canvas.width !== size.pixelWidth) canvas.width = size.pixelWidth;
+        if (canvas.height !== size.pixelHeight) canvas.height = size.pixelHeight;
+        ensureResources();
+      } catch (error) { fail(error); }
+    },
+    update(patch = {}) {
+      if (disposed || failed || !patch || typeof patch !== 'object') return;
+      let changed = false;
+      if (patch.params && typeof patch.params === 'object') {
+        const next = normalizeCassetteParams(descriptor.id, { ...settings, ...patch.params });
+        changed = Object.keys(next).some(key => next[key] !== settings[key]);
+        settings = next;
+      }
+      if (typeof patch.dark === 'boolean' && dark !== patch.dark) { dark = patch.dark; changed = true; }
+      if (typeof patch.reducedMotion === 'boolean' && reducedMotion !== patch.reducedMotion) { reducedMotion = patch.reducedMotion; changed = true; }
+      if (reducedMotion || settings.speed <= 0) {
+        state.accumulator = 0;
+        lastOceanPointer = null;
+      }
+      dirty ||= changed;
+    },
+    pointer(point) {
+      if (disposed || failed || !size.pixelWidth || !size.pixelHeight) return;
+      try {
+        updateEffectPointer(state, point, settings, reducedMotion, size.width, size.height);
+        if (point?.type === 'leave') { lastOceanPointer = null; dirty = true; return; }
+        if (descriptor.id === 'ocean') {
+          if (!field || reducedMotion || settings.speed <= 0 || !point || !['move', 'down'].includes(point.type)
+              || !Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1) return;
+          const next = { x: point.x, y: point.y, time: finite(point.time, state.time) };
+          const samples = oceanPointerTrail(lastOceanPointer, next, size.width, size.height, field.width, field.height, point.type === 'down');
+          if (!samples) return;
+          for (const sample of samples) field.disturb(sample.x, sample.y, sample.radius, sample.strength);
+          lastOceanPointer = next;
+        }
+        dirty = true;
+      } catch (error) { fail(error); }
+    },
+    frame(dt, time) {
+      if (disposed || failed || !size.pixelWidth || !size.pixelHeight) return false;
+      try {
+        state.time = finite(time, state.time);
+        const needsFrame = advanceEffectState(state, dt, settings, reducedMotion);
+        ensureResources();
+        if (renderer) {
+          for (let tick = 0; tick < state.ticks; tick++) field.step(settings.damping);
+          if (dirty || needsFrame || state.ticks) renderer.draw(state.phase, dark, settings);
+        } else {
+          // Always draw the final resting state once, including the last ripple frame.
+          ctx.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
+          ctx.clearRect(0, 0, size.width, size.height);
+          if (descriptor.id === 'dot-field') drawDots(ctx, size, state, settings, dark);
+          else if (descriptor.id === 'ripple') drawRipple(ctx, size, state, settings, dark);
+          else drawContours(ctx, size, state, settings, dark);
+        }
+        dirty = false;
+        return needsFrame;
+      } catch (error) { fail(error); return false; }
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      try { release(); } catch (error) { report(error); }
+    },
   };
 }
 
 
-const PANEL_DICTS = {
+/** The only browser adapter: cassettes receive pixels and values, never DSH or DOM events. */
+function createEffectSurface(React, ctx) {
+  const h=React.createElement;
+  return function EffectSurface({cassette,params,enabled=true,preview=false,onError,onReady}) {
+    const canvasRef=React.useRef(null), current=React.useRef({params,enabled,onError});
+    const wake=React.useRef(()=>{});
+    const [failure,setFailure]=React.useState('');
+    current.current={params,enabled,onError,onReady};
+    React.useEffect(()=>{wake.current();},[params,enabled]);
+    React.useEffect(()=>{
+      const canvas=canvasRef.current;
+      let runtime=null,raf=0,last=0,time=0,disposed=false,failed=false,ready=false;
+      let visible=!document.hidden,focused=document.hasFocus();
+      const motion=matchMedia('(prefers-reduced-motion: reduce)');
+      const dark=()=>ctx.theme.getTheme().active.colorScheme==='dark';
+      function stop(){if(raf)cancelAnimationFrame(raf);raf=0;last=0;}
+      function fail(reason){failed=true;stop();runtime?.dispose();runtime=null;const message=reason instanceof Error?reason.message:String(reason||'Rendering unavailable');setFailure(message);current.current.onError?.(message);}
+      function draw(now){
+        raf=0;
+        if(disposed||!runtime||!current.current.enabled||!visible||!focused)return;
+        if(last && now-last<1000/30-1){raf=requestAnimationFrame(draw);return;}
+        const dt=last?Math.min(.08,(now-last)/1000):1/30;
+        last=now;time+=motion.matches?0:dt;
+        try{
+          runtime.update({params:current.current.params,dark:dark(),reducedMotion:motion.matches});
+          const again=runtime.frame(dt,time);
+          if(failed)return;
+          if(!ready){ready=true;current.current.onReady?.();}
+          if(again&&!motion.matches)raf=requestAnimationFrame(draw);else last=0;
+        }catch(error){fail(error);}
+      }
+      function start(){if(!disposed&&!failed&&!raf&&runtime&&current.current.enabled&&visible&&focused)raf=requestAnimationFrame(draw);}
+      function resize(){
+        if(disposed||failed)return;
+        const box=canvas.getBoundingClientRect();
+        if(box.width<1||box.height<1)return;
+        try{runtime?.resize(box.width,box.height,Math.min(window.devicePixelRatio||1,preview?1:1.25));start();}catch(error){fail(error);}
+      }
+      function refresh(){stop();if(!current.current.enabled)return;start();}
+      function pointer(event){
+        if(!runtime||failed||!current.current.enabled||motion.matches||!visible||!focused)return;
+        if(!preview && event.target instanceof Element && event.target.closest('[data-composer-card], [data-shell-overlay], [data-background-deck]')){leave();return;}
+        const rect=canvas.getBoundingClientRect();
+        const x=(event.clientX-rect.left)/rect.width,y=(event.clientY-rect.top)/rect.height;
+        if(x<0||x>1||y<0||y>1){runtime.pointer({x:0,y:0,type:'leave',time});start();return;}
+        runtime.pointer({x,y,type:event.type==='pointerdown'?'down':'move',time});start();
+      }
+      function leave(){runtime?.pointer({x:0,y:0,type:'leave',time});start();}
+      function visibility(){visible=!document.hidden;if(visible)start();else stop();}
+      function blur(){focused=false;leave();stop();}
+      function focus(){focused=true;start();}
+      function lost(event){event.preventDefault();fail(new Error('Graphics context lost'));}
+      function restored(){if(disposed)return;failed=false;mount();}
+      function mount(){
+        ready=false;
+        stop();runtime?.dispose();runtime=null;time=0;
+        if(disposed)return;
+        try{
+          runtime=createEffectRuntime({canvas,cassette,params:current.current.params,dark:dark(),reducedMotion:motion.matches,maxResolution:preview?600:1100,onError:fail});
+          if(failed){runtime?.dispose();runtime=null;return;}
+          setFailure('');resize();
+        }catch(error){fail(error);}
+      }
+      const pointerTarget=preview?canvas:window;
+      const observer=new ResizeObserver(resize);
+      observer.observe(canvas);
+      pointerTarget.addEventListener('pointermove',pointer,{passive:true});
+      pointerTarget.addEventListener('pointerdown',pointer,{passive:true});
+      if(preview)canvas.addEventListener('pointerleave',leave,{passive:true});
+      document.addEventListener('visibilitychange',visibility);
+      window.addEventListener('blur',blur);window.addEventListener('focus',focus);
+      motion.addEventListener('change',refresh);
+      canvas.addEventListener('webglcontextlost',lost);canvas.addEventListener('webglcontextrestored',restored);
+      const offTheme=ctx.on('theme/change',refresh);
+      wake.current=refresh;
+      mount();
+      return ()=>{
+        disposed=true;wake.current=()=>{};stop();runtime?.dispose();runtime=null;observer.disconnect();offTheme();
+        pointerTarget.removeEventListener('pointermove',pointer);pointerTarget.removeEventListener('pointerdown',pointer);
+        if(preview)canvas.removeEventListener('pointerleave',leave);
+        document.removeEventListener('visibilitychange',visibility);window.removeEventListener('blur',blur);window.removeEventListener('focus',focus);
+        motion.removeEventListener('change',refresh);canvas.removeEventListener('webglcontextlost',lost);canvas.removeEventListener('webglcontextrestored',restored);
+      };
+    },[cassette,preview]);
+    return h('div',{style:{position:'relative',width:'100%',height:'100%',overflow:'hidden'},'data-effect-surface':cassette},
+      h('canvas',{key:cassette,ref:canvasRef,'aria-hidden':true,style:{display:'block',width:'100%',height:'100%',opacity:enabled&&!failure?params.opacity:0,pointerEvents:preview?'auto':'none'}}),
+      preview&&failure?h('p',{role:'status',style:{position:'absolute',bottom:12,left:16,right:16,fontSize:11,color:'var(--dsw-alias-label-secondary)'}},ctx.locale.getSnapshot().active?.startsWith('zh')?'当前效果暂不可用，请切换其他磁带。':'This effect is unavailable. Try another tape.'):null);
+  };
+}
+
+
+/** Flat dictionaries: register these in the same locale namespace as the deck page. */
+const DECK_DICTS = {
   en: {
-    'oceanSettings.title': 'Ocean appearance',
-    'oceanSettings.description': 'Your own little sea',
-    'oceanSettings.instruction': 'Touch a buoy to adjust. Brush the water to feel it.',
-    'oceanSettings.previewLabel': 'Interactive ocean appearance canvas',
-    'oceanSettings.previewError': 'WebGL is unavailable. You can still change and save your settings.',
-    'oceanSettings.tint': 'Water color',
-    'oceanSettings.brightness': 'Sunlight',
-    'oceanSettings.opacity': 'Presence',
-    'oceanSettings.waveStrength': 'Waves',
-    'oceanSettings.speed': 'Flow',
-    'oceanSettings.damping': 'Settling',
-    'oceanSettings.tintHint': 'Choose the color of your water.',
-    'oceanSettings.brightnessHint': 'A soft glow or a sunlit sea.',
-    'oceanSettings.opacityHint': 'Quiet texture or a more visible sea. Text stays solid.',
-    'oceanSettings.waveStrengthHint': 'From a smooth surface to sculpted waves.',
-    'oceanSettings.speedHint': 'Let it drift slowly, or flow a little faster.',
-    'oceanSettings.dampingHint': 'How soon pointer ripples fade. The natural swell keeps flowing.',
-    'oceanSettings.brightnessLow': 'Soft', 'oceanSettings.brightnessHigh': 'Bright',
-    'oceanSettings.opacityLow': 'Subtle', 'oceanSettings.opacityHigh': 'Vivid',
-    'oceanSettings.waveStrengthLow': 'Smooth', 'oceanSettings.waveStrengthHigh': 'Rolling',
-    'oceanSettings.speedLow': 'Still', 'oceanSettings.speedHigh': 'Swift',
-    'oceanSettings.dampingLow': 'Lingering', 'oceanSettings.dampingHigh': 'Quick to calm',
-    'oceanSettings.customColor': 'Your own shade',
-    'oceanSettings.presetLagoon': 'Lagoon', 'oceanSettings.presetAzure': 'Azure',
-    'oceanSettings.presetDeepSea': 'Deep sea', 'oceanSettings.presetJade': 'Jade',
-    'oceanSettings.presetMist': 'Sea mist', 'oceanSettings.presetDusk': 'Dusk',
-    'oceanSettings.enabled': 'Ocean background',
-    'oceanSettings.enable': 'Turn ocean on', 'oceanSettings.disable': 'Turn ocean off',
-    'oceanSettings.offHint': 'The sea is resting. Turn it on below.',
-    'oceanSettings.reset': 'Restore defaults', 'oceanSettings.closeControl': 'Done',
-    'oceanSettings.loading': 'Loading…', 'oceanSettings.saving': 'Saving…',
-    'oceanSettings.saved': 'Saved automatically', 'oceanSettings.readOnly': 'Read-only settings',
-    'oceanSettings.saveError': 'Could not save your changes.',
+    'deck.locale': 'en',
+    'deck.title': 'Background Tapes',
+    'deck.tagline': 'A small collection of quieter spaces.',
+    'deck.background': 'Background',
+    'deck.enable': 'Turn background on',
+    'deck.disable': 'Turn background off',
+    'deck.on': 'On',
+    'deck.off': 'Off',
+    'deck.preview': 'Audition',
+    'deck.previewOnly': 'Preview only',
+    'deck.playing': 'Now playing',
+    'deck.inserted': 'Inserted',
+    'deck.paused': 'Background off',
+    'deck.unsaved': 'Unapplied changes',
+    'deck.insert': 'Insert tape',
+    'deck.apply': 'Insert tape',
+    'deck.previewLabel': 'Interactive preview of the selected background tape',
+    'deck.touch': 'Move your pointer. Take a moment.',
+    'deck.previewError': 'This preview could not be rendered. You can still choose a tape and save its settings.',
+    'deck.offHint': 'Your background is off. This is a preview; inserting a tape will not turn it on.',
+    'deck.draftHint': 'Only this preview has changed. Insert the tape to use these settings.',
+    'deck.auditionHint': 'Just an audition. Your background stays as it is until you insert this tape.',
+    'deck.playingHint': 'This tape is your current background.',
+    'deck.tune': 'Fine-tune',
+    'deck.tuneHint': 'Open one control at a time. Every adjustment stays in this preview.',
+    'deck.close': 'Close control',
+    'deck.reset': 'Reset this tape',
+    'deck.resetHint': 'Restore the selected tape’s default settings in this preview only.',
+    'deck.resetNotice': 'Defaults restored in the preview. Insert the tape to apply them.',
+    'deck.drawer': 'The tape drawer',
+    'deck.drawerHint': 'Four little atmospheres. Pick one to try.',
+    'deck.choose': 'Audition tape',
+    'deck.chooseHint': 'Selecting another tape discards unapplied adjustments, not your saved background.',
+    'deck.discarded': 'Previous preview adjustments were discarded. Your saved background has not changed.',
+    'deck.remote': 'Saved settings changed elsewhere. Your unapplied preview has been kept; inserting will apply it over the latest settings.',
+    'deck.loading': 'Loading your tapes…',
+    'deck.saving': 'Saving…',
+    'deck.saved': 'Saved',
+    'deck.readOnly': 'Read-only. You can audition tapes, but cannot save changes.',
+    'deck.saveError': 'The tape could not be saved. Your preview has been kept so you can try again.',
+    'deck.tint': 'Tone',
+    'deck.tintHint': 'A color for this atmosphere. Enter a six-digit hex color.',
+    'deck.tintInvalid': 'Use a six-digit hex color, such as #8b91d4.',
+    'deck.brightness': 'Light',
+    'deck.brightnessHint': 'From a softer glow to a brighter surface.',
+    'deck.brightnessLow': 'Soft',
+    'deck.brightnessHigh': 'Bright',
+    'deck.opacity': 'Presence',
+    'deck.opacityHint': 'A quiet trace or a more visible texture. Text stays solid.',
+    'deck.opacityLow': 'Subtle',
+    'deck.opacityHigh': 'Vivid',
+    'deck.strength': 'Response',
+    'deck.strengthHint': 'How strongly the surface responds to your pointer.',
+    'deck.strengthLow': 'Gentle',
+    'deck.strengthHigh': 'Expressive',
+    'deck.scale': 'Spacing',
+    'deck.scaleHint': 'Give the pattern a little more or less room.',
+    'deck.scaleLow': 'Close',
+    'deck.scaleHigh': 'Open',
+    'deck.waveStrength': 'Waves',
+    'deck.waveStrengthHint': 'From a smooth sea to more sculpted waves.',
+    'deck.waveStrengthLow': 'Smooth',
+    'deck.waveStrengthHigh': 'Rolling',
+    'deck.speed': 'Pace',
+    'deck.speedHint': 'Slow the motion down, or let it move a little faster.',
+    'deck.speedLow': 'Slow',
+    'deck.speedHigh': 'Swift',
+    'deck.damping': 'Settling',
+    'deck.dampingHint': 'How quickly pointer ripples fade. The natural ocean swell keeps flowing.',
+    'deck.dampingLow': 'Lingering',
+    'deck.dampingHigh': 'Quick to calm',
   },
   zh: {
-    'oceanSettings.title': '海面外观',
-    'oceanSettings.description': '一片属于你的海',
-    'oceanSettings.instruction': '点一下浮标，调成喜欢的模样；划过水面，感受变化。',
-    'oceanSettings.previewLabel': '可交互的海面外观画布',
-    'oceanSettings.previewError': '当前设备无法显示 WebGL，仍可调整并保存设置。',
-    'oceanSettings.tint': '水色', 'oceanSettings.brightness': '日光',
-    'oceanSettings.opacity': '浓淡', 'oceanSettings.waveStrength': '浪高',
-    'oceanSettings.speed': '流动', 'oceanSettings.damping': '余波',
-    'oceanSettings.tintHint': '为这片海，选一个喜欢的颜色。',
-    'oceanSettings.brightnessHint': '柔和一点，或让阳光明亮一些。',
-    'oceanSettings.opacityHint': '若隐若现，或更有存在感；不改变文字透明度。',
-    'oceanSettings.waveStrengthHint': '从平滑的水面，到起伏的波峰。',
-    'oceanSettings.speedHint': '慢慢漂流，或流动得轻快一些。',
-    'oceanSettings.dampingHint': '调节鼠标余波多久平息（阻尼），自然涌浪仍会继续。',
-    'oceanSettings.brightnessLow': '柔和', 'oceanSettings.brightnessHigh': '明亮',
-    'oceanSettings.opacityLow': '淡淡的', 'oceanSettings.opacityHigh': '更明显',
-    'oceanSettings.waveStrengthLow': '平静', 'oceanSettings.waveStrengthHigh': '起伏',
-    'oceanSettings.speedLow': '静止', 'oceanSettings.speedHigh': '轻快',
-    'oceanSettings.dampingLow': '余波悠长', 'oceanSettings.dampingHigh': '更快平息',
-    'oceanSettings.customColor': '自己的颜色',
-    'oceanSettings.presetLagoon': '潟湖', 'oceanSettings.presetAzure': '蔚蓝',
-    'oceanSettings.presetDeepSea': '深海', 'oceanSettings.presetJade': '碧玉',
-    'oceanSettings.presetMist': '海雾', 'oceanSettings.presetDusk': '暮色',
-    'oceanSettings.enabled': '海面背景',
-    'oceanSettings.enable': '开启海面', 'oceanSettings.disable': '关闭海面',
-    'oceanSettings.offHint': '海面正在休息，点击下方开关唤醒它。',
-    'oceanSettings.reset': '恢复默认', 'oceanSettings.closeControl': '收起',
-    'oceanSettings.loading': '正在加载…', 'oceanSettings.saving': '正在保存…',
-    'oceanSettings.saved': '已自动保存', 'oceanSettings.readOnly': '当前设置只读',
-    'oceanSettings.saveError': '未能保存更改。',
+    'deck.locale': 'zh',
+    'deck.title': '背景磁带',
+    'deck.tagline': '收藏几种安静，给日常换个背景。',
+    'deck.background': '背景',
+    'deck.enable': '开启背景',
+    'deck.disable': '关闭背景',
+    'deck.on': '开',
+    'deck.off': '关',
+    'deck.preview': '试听中',
+    'deck.previewOnly': '仅预览',
+    'deck.playing': '正在播放',
+    'deck.inserted': '已插入',
+    'deck.paused': '背景已关闭',
+    'deck.unsaved': '有未应用的调整',
+    'deck.insert': '插入使用',
+    'deck.apply': '插入使用',
+    'deck.previewLabel': '当前所选背景磁带的可交互预览',
+    'deck.touch': '划过这里，停留片刻。',
+    'deck.previewError': '暂时无法渲染预览，仍可选择磁带、调整并保存设置。',
+    'deck.offHint': '背景已关闭。这里仍可试听，插入磁带不会自动开启背景。',
+    'deck.draftHint': '调整只在这里试听，点击「插入使用」后才会应用。',
+    'deck.auditionHint': '先试听一下。插入之前，不会改变你正在使用的背景。',
+    'deck.playingHint': '这盘磁带，就是你当前的背景。',
+    'deck.tune': '细调',
+    'deck.tuneHint': '一次打开一项，调整仅作用于当前试听。',
+    'deck.close': '收起调节',
+    'deck.reset': '重置这盘',
+    'deck.resetHint': '仅将当前磁带的试听参数恢复默认，插入后才保存。',
+    'deck.resetNotice': '试听已恢复默认；点击「插入使用」后才会应用。',
+    'deck.drawer': '磁带抽屉',
+    'deck.drawerHint': '四种氛围，挑一盘听听。',
+    'deck.choose': '试听磁带',
+    'deck.chooseHint': '换一盘会丢弃未应用的试听调整，不会改变已保存的背景。',
+    'deck.discarded': '上一盘未应用的试听调整已丢弃，已保存的背景没有改变。',
+    'deck.remote': '设置已在其他地方更新。你的未应用试听已保留；插入时会基于最新设置应用。',
+    'deck.loading': '正在读取磁带…',
+    'deck.saving': '正在保存…',
+    'deck.saved': '已保存',
+    'deck.readOnly': '当前设置只读：可以试听，暂时不能保存。',
+    'deck.saveError': '未能保存这盘磁带。试听调整已保留，可以再次插入。',
+    'deck.tint': '色调',
+    'deck.tintHint': '为这片氛围选一种色调，输入六位十六进制颜色。',
+    'deck.tintInvalid': '请输入六位十六进制颜色，例如 #8b91d4。',
+    'deck.brightness': '光线',
+    'deck.brightnessHint': '柔和一点，或让水面明亮一些。',
+    'deck.brightnessLow': '柔和',
+    'deck.brightnessHigh': '明亮',
+    'deck.opacity': '浓淡',
+    'deck.opacityHint': '若隐若现，或更有存在感；不改变文字透明度。',
+    'deck.opacityLow': '淡淡的',
+    'deck.opacityHigh': '更明显',
+    'deck.strength': '回应',
+    'deck.strengthHint': '让表面对指尖的回应轻一点，或更鲜明。',
+    'deck.strengthLow': '轻柔',
+    'deck.strengthHigh': '鲜明',
+    'deck.scale': '间距',
+    'deck.scaleHint': '让图案紧凑一些，或留出更多呼吸的空间。',
+    'deck.scaleLow': '紧凑',
+    'deck.scaleHigh': '舒展',
+    'deck.waveStrength': '浪高',
+    'deck.waveStrengthHint': '从平滑的水面，到更有层次的波峰。',
+    'deck.waveStrengthLow': '平静',
+    'deck.waveStrengthHigh': '起伏',
+    'deck.speed': '节奏',
+    'deck.speedHint': '慢慢漂流，或流动得轻快一些。',
+    'deck.speedLow': '缓慢',
+    'deck.speedHigh': '轻快',
+    'deck.damping': '余波',
+    'deck.dampingHint': '调节指尖涟漪多久平息；自然涌浪仍会继续。',
+    'deck.dampingLow': '余韵悠长',
+    'deck.dampingHigh': '更快平息',
   },
 };
 
-// Stable anchors leave the middle open for touching and observing the water.
-const OCEAN_BUOYS = [
-  { key: 'tint', x: .19, y: .30 },
-  { key: 'brightness', x: .78, y: .25, min: .5, max: 2, step: .01 },
-  { key: 'waveStrength', x: .30, y: .51, min: 0, max: 2, step: .05 },
-  { key: 'opacity', x: .74, y: .55, min: 0, max: .5, step: .01 },
-  { key: 'speed', x: .17, y: .75, min: 0, max: 2, step: .05 },
-  { key: 'damping', x: .69, y: .80, min: 0, max: 1, step: .01 },
-];
-const OCEAN_PALETTE = [
-  ['#4896a6', 'presetLagoon'], ['#4b8fc1', 'presetAzure'], ['#406b91', 'presetDeepSea'],
-  ['#529b85', 'presetJade'], ['#8caeb3', 'presetMist'], ['#8784ad', 'presetDusk'],
-];
+// An ocean's global enabled flag is deliberately not part of an audition draft.
+function deckParams(settings, id) {
+  const { enabled: _enabled, ...params } = getCassetteParams(settings, id);
+  return params;
+}
+function signature(params) {
+  return JSON.stringify(Object.keys(params).sort().map(key => [key, params[key]]));
+}
+const validTint = value => /^#[\da-f]{6}$/i.test(value);
 
-/** Local, bounded placement; no body portal or knowledge of the settings shell DOM. */
-function placeBuoyControl(width, height, buoy, requestedWidth = 238, requestedHeight = 164) {
-  const pad = 12, gap = 40;
-  const w = Math.min(requestedWidth, Math.max(1, width - pad * 2));
-  const h = Math.min(requestedHeight, Math.max(1, height - pad * 2));
-  const x = width * buoy.x, y = height * buoy.y;
-  let left = x + gap;
-  let top = y - h / 2;
-  if (left + w > width - pad) {
-    if (x - gap - w >= pad) left = x - gap - w;
-    else { left = x - w / 2; top = y + gap; }
-  }
-  if (top + h > height - pad) top = y - gap - h;
-  return { left: Math.max(pad, Math.min(left, width - pad - w)),
-    top: Math.max(pad, Math.min(top, height - pad - h)), width: w, maxHeight: height - 2 * pad };
+/** Original printed cassette artwork. Literal colors are confined to this SVG. */
+function createTapeArtwork(React) {
+  const h = React.createElement;
+  return function TapeArtwork({ tape }) {
+    const palettes = {
+      'dot-field': ['#1c2036', '#272a46', '#8785c5', '#c4a1c8'],
+      ripple: ['#172a31', '#20383e', '#6f9fa5', '#abc1bc'],
+      contour: ['#2b2924', '#39342b', '#b3a17a', '#d5c8a5'],
+      ocean: ['#192b35', '#213d4a', '#659ba9', '#a3bec9'],
+    };
+    const [body, ink, accent, paper] = palettes[tape.id] || palettes.ocean;
+    let pattern;
+    if (tape.id === 'dot-field') {
+      pattern = Array.from({ length: 117 }, (_, i) => {
+        const col = i % 13, row = Math.floor(i / 13);
+        const x = 70 + col * 12, y = 13 + row * 8;
+        const d = Math.hypot(x - 159, (y - 49) * 1.5);
+        const bend = Math.max(0, 1 - d / 69);
+        return h('circle', { key: i, cx: x + bend * (x - 159) * .26,
+          cy: y + bend * (y - 49) * .5, r: .65 + bend * .6, fill: paper, opacity: .24 + bend * .56 });
+      });
+      pattern.push(h('ellipse', { key: 'orbit', cx: 159, cy: 48, rx: 40, ry: 30,
+        fill: 'none', stroke: accent, strokeWidth: .7, opacity: .5, transform: 'rotate(-22 159 48)' }));
+    } else if (tape.id === 'ripple') {
+      pattern = Array.from({ length: 10 }, (_, i) => h('ellipse', { key: i,
+        cx: 153, cy: 46, rx: 7 + i * 9, ry: 4 + i * 5.1, fill: 'none',
+        stroke: i % 3 === 0 ? paper : accent, strokeWidth: i === 0 ? 1.2 : .6, opacity: .8 - i * .055 }));
+      pattern.push(h('path', { key: 'axis', d: 'M153 15V79M88 46h130', stroke: paper, strokeWidth: .5, opacity: .16 }));
+    } else if (tape.id === 'contour') {
+      pattern = Array.from({ length: 15 }, (_, i) => h('path', { key: i,
+        d: `M65 ${-15 + i * 7} C100 ${34 + i * 2.5},122 ${-9 + i * 5},148 ${15 + i * 4} S188 ${74 + i * 3},232 ${31 + i * 4.5}`,
+        fill: 'none', stroke: i % 4 === 0 ? paper : accent, strokeWidth: i % 4 === 0 ? .85 : .55, opacity: .72 }));
+    } else {
+      pattern = Array.from({ length: 13 }, (_, i) => h('path', { key: i,
+        d: `M65 ${20 + i * 4.7} Q92 ${8 + i * 6},122 ${23 + i * 4.1} T179 ${18 + i * 4.8} T239 ${25 + i * 4.5}`,
+        fill: 'none', stroke: i % 4 === 0 ? paper : accent, strokeWidth: i % 4 === 0 ? 1.3 : .6, opacity: .63 }));
+    }
+    return h('svg', { className: 'tape-deck-art', viewBox: '0 0 240 148', fill: 'none', 'aria-hidden': true, focusable: false },
+      h('path', { d: 'M14 3h212a11 11 0 0 1 11 11v116a11 11 0 0 1-11 11h-53l-6 4H73l-6-4H14a11 11 0 0 1-11-11V14A11 11 0 0 1 14 3Z', fill: body, stroke: accent, strokeOpacity: .3 }),
+      h('rect', { x: 10, y: 10, width: 220, height: 74, rx: 5, fill: ink }),
+      h('svg', { x: 11, y: 11, width: 218, height: 72, viewBox: '11 11 218 72', overflow: 'hidden' }, ...pattern),
+      h('path', { d: 'M19 19h35M19 22h21', stroke: paper, strokeWidth: .65, opacity: .55 }),
+      h('text', { x: 19, y: 58, fill: paper, fontSize: 28, fontWeight: 300, fontFamily: 'ui-monospace, monospace', letterSpacing: '-2' }, tape.number),
+      h('path', { d: 'M20 70h5m3 0h2m3 0h6m3 0h2m3 0h4', stroke: accent, strokeWidth: 2, opacity: .75 }),
+      h('rect', { x: 28, y: 90, width: 184, height: 33, rx: 16.5, fill: '#10171e', stroke: accent, strokeWidth: .55, strokeOpacity: .3 }),
+      h('path', { d: 'M76 92h88M76 121h88', stroke: paper, strokeWidth: .55, opacity: .22 }),
+      ...[76, 164].map(cx => h('g', { key: cx },
+        h('circle', { cx, cy: 106.5, r: 14.5, fill: ink, stroke: accent, strokeWidth: .75, strokeOpacity: .55 }),
+        h('circle', { cx, cy: 106.5, r: 9, fill: body, stroke: paper, strokeWidth: 2.5, strokeOpacity: .68 }),
+        ...Array.from({ length: 6 }, (_, i) => h('path', { key: i, d: `M${cx} 96v4`, stroke: body, strokeWidth: 2.5, transform: `rotate(${i * 60} ${cx} 106.5)` })),
+        h('circle', { cx, cy: 106.5, r: 3.1, fill: '#10171e' }))),
+      h('path', { d: 'M111 102h18v9h-18z', fill: ink, stroke: accent, strokeWidth: .5, strokeOpacity: .3 }),
+      h('path', { d: 'm87 141 6-12h54l6 12', stroke: accent, strokeWidth: .65, opacity: .32 }),
+      ...[[15, 91], [225, 91], [15, 131], [225, 131]].map(([cx, cy]) => h('g', { key: `${cx}-${cy}`, opacity: .4 },
+        h('circle', { cx, cy, r: 2, stroke: accent, strokeWidth: .6 }),
+        h('path', { d: `M${cx - 1} ${cy}h2`, stroke: accent, strokeWidth: .5 }))),
+      h('text', { x: 20, y: 113, fill: paper, fontSize: 6, fontFamily: 'ui-monospace, monospace', opacity: .65 }, 'A'));
+  };
 }
 
-const PANEL_CSS = `
-.ocean-settings { width:100%; min-width:0; color:var(--dsw-alias-label-primary); font:inherit; container-type:inline-size; }
-.ocean-settings *, .ocean-settings *::before, .ocean-settings *::after { box-sizing:border-box; }
-.ocean-settings h2, .ocean-settings h3, .ocean-settings p { margin:0; }
-.ocean-settings button, .ocean-settings input { font:inherit; }
-.ocean-settings button { cursor:pointer; -webkit-tap-highlight-color:transparent; }
-.ocean-settings button:disabled, .ocean-settings input:disabled { opacity:.45; cursor:not-allowed; }
-.ocean-settings button:focus-visible, .ocean-settings input:focus-visible { outline:2px solid var(--dsw-alias-brand-primary); outline-offset:4px; }
-.ocean-settings-scene { position:relative; isolation:isolate; width:100%; height:clamp(500px, 72vh, 720px); min-height:500px; overflow:hidden; border:1px solid var(--dsw-alias-border-l1); border-radius:22px; background:var(--dsw-alias-bg-base); }
-.ocean-settings-water { position:absolute; inset:0; }
-.ocean-settings-intro { position:absolute; z-index:1; top:25px; left:25px; right:25px; pointer-events:none; }
-.ocean-settings-eyebrow { color:var(--dsw-alias-label-secondary); font-size:11px; letter-spacing:.08em; margin-bottom:7px !important; }
-.ocean-settings-title { font-size:23px; font-weight:500; line-height:1.3; letter-spacing:-.03em; }
-.ocean-settings-instruction { color:var(--dsw-alias-label-secondary); font-size:12px; margin-top:8px !important; max-width:36ch; line-height:1.65; }
-.ocean-settings-buoy { position:absolute; z-index:2; transform:translate(-50%,-50%); display:flex; align-items:center; flex-direction:column; gap:8px; width:82px; padding:0; border:0; background:none; color:var(--dsw-alias-label-primary); }
-.ocean-settings-buoy-face { position:relative; display:grid; place-items:center; width:49px; height:49px; border-radius:50%; border:1px solid var(--dsw-alias-border-l2); background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 88%,transparent); box-shadow:0 8px 20px color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent), inset 0 1px 0 color-mix(in srgb,var(--dsw-alias-label-primary) 9%,transparent); backdrop-filter:blur(14px); transition:border-color .15s, background .15s; }
-.ocean-settings-buoy-face::after { content:''; position:absolute; bottom:-11px; width:62px; height:12px; border:1px solid color-mix(in srgb,var(--dsw-alias-label-secondary) 23%,transparent); border-radius:50%; pointer-events:none; }
-.ocean-settings-buoy:hover .ocean-settings-buoy-face, .ocean-settings-buoy[aria-expanded=true] .ocean-settings-buoy-face { border-color:var(--dsw-alias-brand-primary); background:var(--dsw-alias-bg-layer-2); }
-.ocean-settings-buoy[aria-expanded=true] { z-index:4; }
-.ocean-settings-buoy-label { padding:2px 7px; border-radius:9px; font-size:11px; line-height:1.4; background:color-mix(in srgb,var(--dsw-alias-bg-base) 76%,transparent); }
-.ocean-settings-tint-dot { position:absolute; right:3px; bottom:3px; width:10px; height:10px; border:2px solid var(--dsw-alias-bg-overlay); border-radius:50%; }
-.ocean-settings-control { position:absolute; z-index:5; border:1px solid var(--dsw-alias-border-l2); border-radius:16px; padding:15px; background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 95%,transparent); backdrop-filter:blur(20px); box-shadow:0 12px 35px color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent); overflow:auto; animation:ocean-settings-reveal .14s ease-out; }
-.ocean-settings-control-heading { display:flex; gap:8px; align-items:center; }
-.ocean-settings-control-title { font-size:13px; font-weight:600; flex:1; }
-.ocean-settings-icon-button { border:0; background:none; color:var(--dsw-alias-label-secondary); width:28px; height:28px; display:grid; place-items:center; padding:3px; border-radius:8px; }
-.ocean-settings-icon-button:hover { background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); }
-.ocean-settings-control-hint { color:var(--dsw-alias-label-secondary); font-size:11px; line-height:1.6; margin:7px 0 12px !important; }
-.ocean-settings-range { width:100%; min-width:0; height:24px; margin:0; padding:0; background:none; cursor:pointer; accent-color:var(--dsw-alias-brand-primary); }
-.ocean-settings-range-ends { display:flex; justify-content:space-between; align-items:center; gap:4px; font-size:10px; color:var(--dsw-alias-label-secondary); }
-.ocean-settings-range-value { font-size:10px; font-variant-numeric:tabular-nums; padding:2px 5px; border-radius:5px; background:var(--dsw-alias-bg-layer-2); }
-.ocean-settings-palette { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
-.ocean-settings-color-dot { width:27px; height:27px; flex:none; border:2px solid var(--dsw-alias-bg-overlay); border-radius:50%; box-shadow:0 0 0 1px var(--dsw-alias-border-l2); }
-.ocean-settings-color-dot[aria-pressed=true] { outline:2px solid var(--dsw-alias-brand-primary); outline-offset:2px; }
-.ocean-settings-custom { display:flex; justify-content:space-between; align-items:center; gap:12px; font-size:11px; color:var(--dsw-alias-label-secondary); }
-.ocean-settings-custom input { width:38px; height:28px; padding:2px; border:1px solid var(--dsw-alias-border-l2); border-radius:6px; background:var(--dsw-alias-bg-layer-1); cursor:pointer; }
-.ocean-settings-dock { position:absolute; z-index:3; inset:auto 15px 15px; display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:8px; pointer-events:none; }
-.ocean-settings-dock-actions { display:flex; align-items:center; gap:6px; pointer-events:auto; }
-.ocean-settings-dock-button { display:flex; gap:6px; align-items:center; min-height:34px; padding:5px 10px; font-size:11px !important; border:1px solid var(--dsw-alias-border-l2); border-radius:20px; background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 90%,transparent); color:var(--dsw-alias-label-secondary); backdrop-filter:blur(12px); }
-.ocean-settings-dock-button[aria-checked=true] { color:var(--dsw-alias-label-primary); }
-.ocean-settings-status { margin-left:auto !important; padding:4px 7px; border-radius:8px; font-size:10px; background:color-mix(in srgb,var(--dsw-alias-bg-base) 85%,transparent); color:var(--dsw-alias-label-secondary); }
-.ocean-settings-off { position:absolute; left:15%; right:15%; top:43%; text-align:center; pointer-events:none; font-size:12px; color:var(--dsw-alias-label-secondary); }
-.ocean-settings-error { font-size:12px; color:var(--dsw-alias-state-error-primary); line-height:1.6; padding:10px 4px; overflow-wrap:anywhere; }
-@keyframes ocean-settings-reveal { from{opacity:0} to{opacity:1} }
-@container (max-width:350px) { .ocean-settings-intro{left:18px;top:20px;right:18px} .ocean-settings-title{font-size:21px} .ocean-settings-scene{min-height:540px;height:72vh} .ocean-settings-dock{inset:auto 10px 10px} .ocean-settings-dock-button{padding:5px 8px} }
-@media(prefers-reduced-motion:reduce) { .ocean-settings-control{animation:none} .ocean-settings-buoy-face{transition:none} }
+const DECK_CSS = `
+.tape-deck{width:100%;min-width:0;color:var(--dsw-alias-label-primary);font:inherit;container-type:inline-size;line-height:1.5}
+.tape-deck *,.tape-deck *::before,.tape-deck *::after{box-sizing:border-box}
+.tape-deck h2,.tape-deck h3,.tape-deck p{margin:0}
+.tape-deck button,.tape-deck input{font:inherit}
+.tape-deck button{cursor:pointer;-webkit-tap-highlight-color:transparent}
+.tape-deck button:disabled,.tape-deck input:disabled{opacity:.45;cursor:not-allowed}
+.tape-deck button:focus-visible,.tape-deck input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:4px}
+.tape-deck-header{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:2px 2px 23px}
+.tape-deck-brand{display:flex;gap:12px;align-items:center;min-width:0}
+.tape-deck-mark{width:34px;height:34px;flex:none;color:var(--dsw-alias-label-secondary)}
+.tape-deck-title{font-size:24px;font-weight:530;letter-spacing:-.045em;line-height:1.3}
+.tape-deck-tagline{font-size:12px;color:var(--dsw-alias-label-secondary);margin-top:5px!important}
+.tape-deck-power{display:flex;align-items:center;gap:9px;background:none;border:0;color:var(--dsw-alias-label-secondary);padding:8px 0 8px 8px;font-size:11px!important;flex:none}
+.tape-deck-switch{display:block;width:29px;height:17px;padding:3px;border-radius:20px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);transition:background .15s}
+.tape-deck-switch::after{content:'';display:block;width:9px;height:9px;border-radius:50%;background:var(--dsw-alias-label-secondary);transition:transform .15s}
+.tape-deck-power[aria-checked=true] .tape-deck-switch{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 16%,var(--dsw-alias-bg-base))}
+.tape-deck-power[aria-checked=true] .tape-deck-switch::after{transform:translateX(12px);background:var(--dsw-alias-brand-primary)}
+.tape-deck-player{border:1px solid var(--dsw-alias-border-l1);border-radius:20px;overflow:hidden;background:var(--dsw-alias-bg-base)}
+.tape-deck-stage{position:relative;isolation:isolate;height:clamp(238px,34vh,340px);overflow:hidden}
+.tape-deck-surface{position:absolute;inset:0}
+.tape-deck-stage-top{position:absolute;z-index:1;top:17px;left:19px;right:19px;display:flex;align-items:center;justify-content:space-between;gap:10px;pointer-events:none}
+.tape-deck-badges{display:flex;flex-wrap:wrap;gap:6px}
+.tape-deck-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:20px;background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 88%,transparent);font-size:10px;line-height:1.4;color:var(--dsw-alias-label-secondary)}
+.tape-deck-badge[data-kind=preview]{color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 28%,var(--dsw-alias-border-l1))}
+.tape-deck-badge[data-kind=playing]::before{content:'';width:4px;height:4px;border-radius:50%;background:var(--dsw-alias-state-success-primary)}
+.tape-deck-serial{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary);white-space:nowrap;padding:3px 5px;background:color-mix(in srgb,var(--dsw-alias-bg-base) 65%,transparent);border-radius:4px}
+.tape-deck-stage-caption{position:absolute;inset:auto 0 0;z-index:1;pointer-events:none;padding:42px 22px 20px;background:linear-gradient(transparent,color-mix(in srgb,var(--dsw-alias-bg-base) 92%,transparent))}
+.tape-deck-mood{font-size:9px;letter-spacing:.13em;color:var(--dsw-alias-label-secondary);margin-bottom:7px!important}
+.tape-deck-current-title{font-size:23px;font-weight:500;letter-spacing:-.035em;line-height:1.3}
+.tape-deck-current-subtitle{font-size:12px;color:var(--dsw-alias-label-secondary);margin-top:6px!important;max-width:52ch}
+.tape-deck-touch{position:absolute;top:40%;left:18px;right:18px;text-align:center;pointer-events:none;font-size:10px;letter-spacing:.025em;color:var(--dsw-alias-label-secondary);opacity:.7}
+.tape-deck-transport{position:relative;z-index:2;display:flex;align-items:center;gap:20px;padding:16px 21px;border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
+.tape-deck-transport-copy{flex:1;min-width:0}
+.tape-deck-status{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.tape-deck-status[data-unsaved=true]{color:var(--dsw-alias-brand-primary)}
+.tape-deck-action-hint{margin-top:4px!important;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.65;max-width:60ch}
+.tape-deck-insert{display:inline-flex;justify-content:center;align-items:center;gap:9px;min-height:39px;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 42%,var(--dsw-alias-border-l2));background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-primary);border-radius:10px;padding:8px 16px;font-size:12px!important;font-weight:550;white-space:nowrap;transition:background .15s,border-color .15s}
+.tape-deck-insert:not(:disabled):hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 20%,var(--dsw-alias-bg-layer-1));border-color:var(--dsw-alias-brand-primary)}
+.tape-deck-insert:disabled{opacity:.6}
+.tape-deck-insert svg{width:14px;height:14px;flex:none}
+.tape-deck-tuning{padding:15px 2px 22px}
+.tape-deck-tune-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tape-deck-tune-label{font-size:10px;letter-spacing:.035em;color:var(--dsw-alias-label-secondary);margin-right:3px}
+.tape-deck-knob{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:30px;padding:5px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-base);font-size:11px!important;transition:border-color .15s,color .15s}
+.tape-deck-knob:hover,.tape-deck-knob[aria-expanded=true]{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1)}
+.tape-deck-knob[aria-expanded=true]{border-color:var(--dsw-alias-brand-primary)}
+.tape-deck-knob-dot{width:11px;height:11px;display:block;border:1px solid currentColor;border-radius:50%;position:relative;opacity:.75}
+.tape-deck-knob-dot::after{content:'';position:absolute;left:4px;top:1px;width:1px;height:4px;background:currentColor;transform:rotate(30deg);transform-origin:bottom}
+.tape-deck-reset{margin-left:auto;min-height:30px;border:0;padding:5px 3px 5px 9px;background:none;color:var(--dsw-alias-label-secondary);font-size:10px!important;text-decoration:underline;text-decoration-color:var(--dsw-alias-border-l2);text-underline-offset:4px}
+.tape-deck-control{width:min(100%,390px);margin-top:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-overlay);padding:14px 16px;box-shadow:0 8px 24px color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent);animation:tape-deck-reveal .12s ease-out}
+.tape-deck-control-heading{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+.tape-deck-control-heading label{font-size:12px;font-weight:550;flex:1}
+.tape-deck-value{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary)}
+.tape-deck-close{display:grid;place-items:center;width:26px;height:26px;border:0;background:none;color:var(--dsw-alias-label-secondary);padding:4px;border-radius:6px}
+.tape-deck-close:hover{background:var(--dsw-alias-bg-layer-2)}
+.tape-deck-close svg{width:13px;height:13px}
+.tape-deck-control-hint{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.6;margin-bottom:11px!important}
+.tape-deck-range{display:block;width:100%;min-width:0;height:26px;appearance:none;-webkit-appearance:none;cursor:pointer;background:none;margin:0;padding:0;accent-color:var(--dsw-alias-brand-primary)}
+.tape-deck-range::-webkit-slider-runnable-track{height:3px;border-radius:4px;background:linear-gradient(to right,var(--dsw-alias-brand-primary) var(--deck-progress),var(--dsw-alias-border-l2) var(--deck-progress))}
+.tape-deck-range::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:13px;height:13px;margin-top:-5px;border-radius:50%;border:2px solid var(--dsw-alias-bg-overlay);background:var(--dsw-alias-brand-primary);box-shadow:0 0 0 1px var(--dsw-alias-brand-primary)}
+.tape-deck-range::-moz-range-track{height:3px;border-radius:4px;background:var(--dsw-alias-border-l2)}
+.tape-deck-range::-moz-range-progress{height:3px;border-radius:4px;background:var(--dsw-alias-brand-primary)}
+.tape-deck-range::-moz-range-thumb{width:10px;height:10px;border-radius:50%;border:2px solid var(--dsw-alias-bg-overlay);background:var(--dsw-alias-brand-primary);box-shadow:0 0 0 1px var(--dsw-alias-brand-primary)}
+.tape-deck-range-ends{display:flex;justify-content:space-between;gap:10px;color:var(--dsw-alias-label-secondary);font-size:10px}
+.tape-deck-hex{display:block;width:100%;max-width:170px;min-height:34px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:7px;padding:6px 10px;font:12px ui-monospace,SFMono-Regular,Consolas,monospace!important}
+.tape-deck-hex[aria-invalid=true]{border-color:var(--dsw-alias-state-error-primary)}
+.tape-deck-drawer{position:relative;border:1px solid var(--dsw-alias-border-l1);border-radius:20px;background:var(--dsw-alias-bg-layer-1);padding:25px 20px 17px;box-shadow:inset 0 5px 12px color-mix(in srgb,var(--dsw-alias-label-primary) 2%,transparent)}
+.tape-deck-drawer::before{content:'';position:absolute;top:9px;left:calc(50% - 16px);width:32px;height:3px;border-radius:4px;background:var(--dsw-alias-border-l2)}
+.tape-deck-drawer-heading{display:flex;align-items:baseline;gap:10px;margin-bottom:4px}
+.tape-deck-drawer-title{font-size:14px;font-weight:550;letter-spacing:-.02em}
+.tape-deck-count{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}
+.tape-deck-drawer-subtitle{font-size:11px;color:var(--dsw-alias-label-secondary);margin-bottom:19px!important}
+.tape-deck-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.tape-deck-card{display:block;text-align:left;min-width:0;width:100%;padding:10px 10px 11px;border:1px solid var(--dsw-alias-border-l1);border-radius:13px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);transition:transform .15s,border-color .15s,box-shadow .15s}
+.tape-deck-card:not(:disabled):hover{transform:translateY(-2px);border-color:var(--dsw-alias-border-l2);box-shadow:0 5px 14px color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent)}
+.tape-deck-card[aria-pressed=true]{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 1px color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent)}
+.tape-deck-art{display:block;width:100%;height:auto;filter:drop-shadow(0 3px 3px color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent))}
+.tape-deck-card-copy{display:flex;align-items:baseline;gap:7px;margin:10px 3px 2px}
+.tape-deck-card-name{font-size:12px;font-weight:550;flex:1;min-width:0;line-height:1.4}
+.tape-deck-card-number{font:9px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}
+.tape-deck-card-meta{display:flex;justify-content:space-between;align-items:center;gap:6px;min-height:21px;margin:4px 3px 0;color:var(--dsw-alias-label-secondary);font-size:9px;line-height:1.5}
+.tape-deck-card-mood{overflow-wrap:anywhere;letter-spacing:.035em}
+.tape-deck-card-state{display:inline-flex;align-items:center;gap:4px;flex:none;color:var(--dsw-alias-label-secondary)}
+.tape-deck-card-state[data-preview=true]{color:var(--dsw-alias-brand-primary)}
+.tape-deck-card-state[data-playing=true]::before{content:'';width:3px;height:3px;background:var(--dsw-alias-state-success-primary);border-radius:50%}
+.tape-deck-drawer-note{margin-top:15px!important;font-size:10px;color:var(--dsw-alias-label-secondary);line-height:1.7}
+.tape-deck-notice{margin:10px 2px 0!important;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.7;overflow-wrap:anywhere}
+.tape-deck-error{color:var(--dsw-alias-state-error-primary)}
+@keyframes tape-deck-reveal{from{opacity:0;transform:translateY(-2px)}to{opacity:1;transform:none}}
+@container(min-width:940px){.tape-deck-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@container(max-width:500px){.tape-deck-header{gap:12px}.tape-deck-brand{gap:9px}.tape-deck-mark{width:27px;height:27px}.tape-deck-title{font-size:22px}.tape-deck-tagline{font-size:11px}.tape-deck-power-label{display:none}.tape-deck-transport{padding:14px 16px;gap:12px}.tape-deck-action-hint{font-size:10px}.tape-deck-insert{padding:8px 12px}.tape-deck-drawer{padding:25px 14px 15px}.tape-deck-grid{gap:10px}.tape-deck-card{padding:7px}.tape-deck-card-name{font-size:11px}.tape-deck-card-meta{display:block}.tape-deck-card-state{min-height:15px}.tape-deck-card-copy{margin-top:8px}}
+@container(max-width:359px){.tape-deck-header{align-items:flex-start;padding-bottom:17px}.tape-deck-brand{gap:8px}.tape-deck-mark{width:22px;height:22px;margin-top:3px}.tape-deck-title{font-size:21px}.tape-deck-tagline{font-size:10px;max-width:22ch}.tape-deck-power{padding-top:5px}.tape-deck-stage{height:250px}.tape-deck-stage-top{left:13px;right:13px;top:13px}.tape-deck-stage-caption{padding:42px 16px 17px}.tape-deck-current-title{font-size:21px}.tape-deck-current-subtitle{font-size:11px}.tape-deck-transport{align-items:stretch;flex-direction:column;gap:11px}.tape-deck-insert{width:100%}.tape-deck-grid{grid-template-columns:minmax(0,1fr)}.tape-deck-card{padding:10px}.tape-deck-card-name{font-size:13px}.tape-deck-card-meta{display:flex}.tape-deck-tune-label{width:100%;margin-bottom:2px}.tape-deck-reset{margin-left:0;padding-left:3px}.tape-deck-knob{padding:5px 8px}.tape-deck-serial{font-size:9px}}
+@media(prefers-reduced-motion:reduce){.tape-deck *,.tape-deck *::before,.tape-deck *::after{animation:none!important;transition:none!important}.tape-deck-card:not(:disabled):hover{transform:none}}
 `;
 
-function createOceanSettingsPage({ React, ctx, model, t, Preview }) {
+/** One real Surface, local audition state, and an explicit single-patch commit. */
+function createDeckPage({ React, ctx, model, t, Surface }) {
   const h = React.createElement;
-  const Icon = createBuoyIcon(React);
-  const text = key => t(`oceanSettings.${key}`);
+  const Artwork = createTapeArtwork(React);
+  const text = key => t(`deck.${key}`);
   const subscribeLocale = listener => ctx.locale.subscribe(listener);
   const getLocale = () => ctx.locale.getSnapshot();
-  return function OceanSettingsPage() {
+  const icon = (kind, props = {}) => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+    strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false, ...props },
+    kind === 'mark' ? h(React.Fragment, null,
+      h('rect', { x: 2.5, y: 5, width: 19, height: 14, rx: 3 }),
+      h('circle', { cx: 8, cy: 12, r: 2.5 }), h('circle', { cx: 16, cy: 12, r: 2.5 }),
+      h('path', { d: 'M8 9.5h8M8 14.5h8M8 19l1.5-3h5l1.5 3' }))
+      : h('path', { d: kind === 'close' ? 'm7 7 10 10M17 7 7 17' : kind === 'check' ? 'm5 12 4 4L19 6' : 'M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4' }));
+
+  return function DeckPage() {
     const snapshot = React.useSyncExternalStore(model.subscribe, model.getSnapshot, model.getSnapshot);
     React.useSyncExternalStore(subscribeLocale, getLocale, getLocale);
+    const lang = text('locale') === 'zh' ? 'zh' : 'en';
+    const settings = snapshot.settings;
+    // A null draft follows remote settings. Once edited, it is never replaced by a remote update.
+    const [editor, setEditor] = React.useState({ id: null, draft: null, base: null });
     const [active, setActive] = React.useState(null);
-    const [size, setSize] = React.useState({ width: 540, height: 580 });
-    const [popoverSize, setPopoverSize] = React.useState({ width:238, height:170 });
-    const stage = React.useRef(null), popup = React.useRef(null);
-    const buttons = React.useRef({});
+    const [colorText, setColorText] = React.useState('');
+    const [notice, setNotice] = React.useState('');
+    const [localError, setLocalError] = React.useState('');
+    const [previewError, setPreviewError] = React.useState(null);
+    const [pending, setPending] = React.useState(null);
+    const controlInput = React.useRef(null);
+    const controlButtons = React.useRef({});
     const id = React.useId();
-    const settings = { ...APPEARANCE_DEFAULTS, ...snapshot.settings };
-    const disabled = !snapshot.loaded || !snapshot.writable;
-    const selected = OCEAN_BUOYS.find(buoy => buoy.key === active);
-    function close(returnFocus = false) {
-      setActive(null);
-      if (returnFocus) buttons.current[active]?.focus();
-    }
-    React.useLayoutEffect(() => {
-      const observer = new ResizeObserver(([entry]) => {
-        setSize({ width:entry.contentRect.width, height:entry.contentRect.height });
-      });
-      observer.observe(stage.current);
-      return () => observer.disconnect();
-    }, []);
-    React.useLayoutEffect(() => {
-      if (!active || !popup.current) return;
-      const node = popup.current;
-      const observer = new ResizeObserver(() => {
-        const rect = node.getBoundingClientRect();
-        setPopoverSize(previous => Math.abs(previous.width-rect.width)<1 && Math.abs(previous.height-rect.height)<1
-          ? previous : {width:rect.width,height:rect.height});
-      });
-      observer.observe(node);
-      node.querySelector('input, button[data-palette]')?.focus({ preventScroll:true });
-      return () => observer.disconnect();
-    }, [active]);
-    // Dismiss without swallowing water interaction; Escape stays local to this editor.
+    const selected = getCassette(editor.id || settings.cassette);
+    const persisted = React.useMemo(() => deckParams(settings, selected.id), [settings, selected.id]);
+    const params = editor.draft || persisted;
+    const persistedSignature = signature(persisted);
+    const draftSignature = signature(params);
+    const dirty = draftSignature !== persistedSignature;
+    const isCurrent = selected.id === settings.cassette;
+    const audition = !isCurrent || dirty;
+    const remoteConflict = editor.draft && editor.base !== persistedSignature && dirty;
+    const editDisabled = !snapshot.loaded || snapshot.saving;
+    const saveDisabled = !snapshot.loaded || !snapshot.writable || snapshot.saving;
+    const invalidColor = active === 'tint' && !validTint(colorText);
+    const control = selected.controls.find(([key]) => key === active);
+    const controls = [['tint'], ...selected.controls];
+    const changePending = !!pending || snapshot.saving;
+    const canInsert = !saveDisabled && !invalidColor && (!isCurrent || dirty || !!snapshot.error || !!localError);
+    const hasPreviewError = previewError === selected.id;
+    const onSurfaceError = React.useCallback(() => setPreviewError(selected.id), [selected.id]);
+
+    React.useEffect(() => { setActive(null); }, [selected.id]);
     React.useEffect(() => {
-      if (!active) return;
-      const outside = event => {
-        if (popup.current?.contains(event.target) || Object.values(buttons.current).some(node => node?.contains(event.target))) return;
-        setActive(null);
-      };
-      document.addEventListener('pointerdown', outside, true);
-      return () => document.removeEventListener('pointerdown', outside, true);
+      if (active) controlInput.current?.focus({ preventScroll: true });
     }, [active]);
-    const status = !snapshot.loaded ? 'loading' : snapshot.error ? 'saveError'
-      : snapshot.saving ? 'saving' : !snapshot.writable ? 'readOnly' : 'saved';
-    const position = selected ? placeBuoyControl(size.width,size.height,selected,238,popoverSize.height) : null;
-    return h('section', { className:'ocean-settings', 'aria-labelledby':`${id}-title`,
-      onKeyDown:event => { if (event.key==='Escape' && active) {event.preventDefault();event.stopPropagation();close(true);} },
-      onBlur:event => { if (active && event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setActive(null); },
-    },
-      h('style',null,PANEL_CSS),
-      h('div',{ref:stage,className:'ocean-settings-scene','data-ocean-settings-version':'0.7.0'},
-        h('div',{className:'ocean-settings-water'},h(Preview,{settings, immersive:true})),
-        h('header',{className:'ocean-settings-intro'},
-          h('p',{className:'ocean-settings-eyebrow'},text('title')),
-          h('h2',{id:`${id}-title`,className:'ocean-settings-title'},text('description')),
-          h('p',{className:'ocean-settings-instruction'},text('instruction'))),
-        ...OCEAN_BUOYS.map(buoy => h('button',{
-          key:buoy.key,ref:node=>{buttons.current[buoy.key]=node;},type:'button',
-          className:'ocean-settings-buoy',style:{left:`${buoy.x*100}%`,top:`${buoy.y*100}%`},
-          title:text(buoy.key),'aria-label':text(buoy.key),'aria-expanded':active===buoy.key,
-          'aria-controls':active===buoy.key?`${id}-control`:undefined,
-          onClick:()=>{setPopoverSize({width:238,height:buoy.key==='tint'?185:170});setActive(active===buoy.key?null:buoy.key);},
-        },h('span',{className:'ocean-settings-buoy-face'},h(Icon,{kind:buoy.key}),
-          buoy.key==='tint'?h('span',{className:'ocean-settings-tint-dot',style:{background:settings.tint}}):null),
-          h('span',{className:'ocean-settings-buoy-label'},text(buoy.key)))),
-        selected?h('div',{key:active,ref:popup,id:`${id}-control`,className:'ocean-settings-control',role:'group',
-          'aria-labelledby':`${id}-control-title`,style:position},
-          h('div',{className:'ocean-settings-control-heading'},h(Icon,{kind:active}),
-            h('h3',{id:`${id}-control-title`,className:'ocean-settings-control-title'},text(active)),
-            h('button',{type:'button',className:'ocean-settings-icon-button','aria-label':text('closeControl'),title:text('closeControl'),onClick:()=>close(true)},h(Icon,{kind:'close'}))),
-          h('p',{id:`${id}-hint`,className:'ocean-settings-control-hint'},text(`${active}Hint`)),
-          active==='tint'?h(React.Fragment,null,
-            h('div',{className:'ocean-settings-palette'},...OCEAN_PALETTE.map(([color,name])=>h('button',{
-              key:color,type:'button','data-palette':true,className:'ocean-settings-color-dot',style:{background:color},
-              title:text(name),'aria-label':text(name),'aria-pressed':settings.tint===color,disabled,
-              onClick:()=>model.update({tint:color})}))),
-            h('label',{className:'ocean-settings-custom'},text('customColor'),h('input',{
-              type:'color',value:settings.tint,disabled,onChange:event=>model.update({tint:event.target.value})})))
-          :h(React.Fragment,null,
-            h('input',{type:'range',className:'ocean-settings-range',min:selected.min,max:selected.max,step:selected.step,
-              value:settings[active],disabled,'aria-label':text(active),'aria-describedby':`${id}-hint`,
-              onChange:event=>model.update({[active]:Number(event.target.value)})}),
-            h('div',{className:'ocean-settings-range-ends'},h('span',null,text(`${active}Low`)),
-              h('output',{className:'ocean-settings-range-value'},Number(settings[active]).toFixed(2)),
-              h('span',null,text(`${active}High`))))) :null,
-        !settings.enabled?h('p',{className:'ocean-settings-off'},text('offHint')):null,
-        h('footer',{className:'ocean-settings-dock'},
-          h('div',{className:'ocean-settings-dock-actions'},
-            h('button',{type:'button',className:'ocean-settings-dock-button',role:'switch','aria-checked':settings.enabled,
-              'aria-label':text('enabled'),title:text(settings.enabled?'disable':'enable'),disabled,
-              onClick:()=>model.update({enabled:!settings.enabled})},h(Icon,{kind:'power'}),text(settings.enabled?'disable':'enable')),
-            h('button',{type:'button',className:'ocean-settings-dock-button',disabled,onClick:()=>model.reset()},h(Icon,{kind:'reset'}),text('reset'))),
-          h('p',{className:'ocean-settings-status',role:'status','aria-live':'polite'},text(status)))),
-      snapshot.error?h('p',{className:'ocean-settings-error',role:'alert'},snapshot.error):null);
+    // A failed optimistic save must retain the preview for retry. Clear it only after acknowledgement.
+    // Dependencies are stable primitives (plus the finite pending transaction), not new params objects.
+    React.useEffect(() => {
+      if (!pending || snapshot.saving) return;
+      setPending(null);
+      if (!snapshot.error && settings.cassette === pending.id && persistedSignature === pending.signature) {
+        setEditor(previous => previous.id === pending.id && previous.draft && signature(previous.draft) === pending.signature
+          ? { id: previous.id, draft: null, base: null } : previous);
+      }
+    }, [pending, snapshot.saving, snapshot.error, settings.cassette, persistedSignature]);
+
+    function closeControl(returnFocus = false) {
+      setActive(null);
+      if (returnFocus) controlButtons.current[active]?.focus({ preventScroll: true });
+    }
+    function updateDraft(patch) {
+      setEditor({ id: selected.id, draft: { ...params, ...patch }, base: editor.base || persistedSignature });
+      setNotice('');
+      setLocalError('');
+    }
+    function choose(tape) {
+      if (editDisabled || tape.id === selected.id) return;
+      setNotice(dirty ? 'discarded' : '');
+      setEditor({ id: tape.id, draft: null, base: null });
+      setActive(null);
+      setLocalError('');
+      setPreviewError(null);
+    }
+    function insert() {
+      const latest = model.getSnapshot();
+      if (!canInsert || !latest.loaded || !latest.writable || latest.saving) return;
+      setEditor({ id: selected.id, draft: { ...params }, base: persistedSignature });
+      setPending({ id: selected.id, signature: draftSignature });
+      setNotice('');
+      setLocalError('');
+      try {
+        // Preserve unrelated cassettes and the current global power state from the latest snapshot.
+        model.update(cassettePatch(latest.settings, selected.id, params));
+      } catch (error) {
+        setPending(null);
+        setLocalError(error instanceof Error ? error.message : String(error));
+      }
+    }
+    const badge = audition ? 'preview' : settings.enabled ? 'playing' : 'paused';
+    const actionHint = !settings.enabled ? 'offHint' : dirty ? 'draftHint' : !isCurrent ? 'auditionHint' : 'playingHint';
+    const status = !snapshot.loaded ? 'loading' : changePending ? 'saving' : !snapshot.writable ? 'readOnly'
+      : snapshot.error || localError ? 'saveError' : dirty ? 'unsaved' : audition ? 'preview' : 'saved';
+    const controlId = `${id}-control`;
+    return h('section', { 'data-background-deck':true, className: 'tape-deck', 'aria-labelledby': `${id}-title`, 'aria-busy': !snapshot.loaded || snapshot.saving,
+      onKeyDown: event => { if (event.key === 'Escape' && active) { event.preventDefault(); event.stopPropagation(); closeControl(true); } },
+      onBlur: event => { if (active && event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setActive(null); } },
+      h('style', null, DECK_CSS),
+      h('header', { className: 'tape-deck-header' },
+        h('div', { className: 'tape-deck-brand' }, icon('mark', { className: 'tape-deck-mark' }),
+          h('div', null, h('h2', { id: `${id}-title`, className: 'tape-deck-title' }, text('title')),
+            h('p', { className: 'tape-deck-tagline' }, text('tagline')))),
+        h('button', { type: 'button', className: 'tape-deck-power', role: 'switch', 'aria-checked': !!settings.enabled,
+          'aria-label': text(settings.enabled ? 'disable' : 'enable'), title: text(settings.enabled ? 'disable' : 'enable'), disabled: saveDisabled,
+          onClick: () => { const latest = model.getSnapshot(); if (latest.loaded && latest.writable && !latest.saving) model.update({ enabled: !latest.settings.enabled }); } },
+          h('span', { className: 'tape-deck-power-label' }, text('background')),
+          h('span', { className: 'tape-deck-switch', 'aria-hidden': true }))),
+      h('div', { className: 'tape-deck-player' },
+        h('div', { className: 'tape-deck-stage', role: 'group', 'aria-label': text('previewLabel') },
+          h('div', { className: 'tape-deck-surface' }, snapshot.loaded
+            ? h(Surface, { key: selected.id, cassette: selected.id, params, enabled: true, preview: true, onError: onSurfaceError, onReady: () => setPreviewError(null) }) : null),
+          h('div', { className: 'tape-deck-stage-top' },
+            h('div', { className: 'tape-deck-badges' },
+              h('span', { className: 'tape-deck-badge', 'data-kind': audition ? 'preview' : settings.enabled ? 'playing' : 'paused' }, text(snapshot.loaded ? badge : 'loading')),
+              !settings.enabled ? h('span', { className: 'tape-deck-badge' }, text('previewOnly')) : null),
+            h('span', { className: 'tape-deck-serial', 'aria-hidden': true }, `${selected.number} / ${String(CASSETTES.length).padStart(2, '0')}`)),
+          !hasPreviewError && snapshot.loaded ? h('p', { className: 'tape-deck-touch' }, text('touch')) : null,
+          h('div', { className: 'tape-deck-stage-caption' },
+            h('p', { className: 'tape-deck-mood' }, selected.mood[lang]),
+            h('h3', { className: 'tape-deck-current-title' }, selected.name[lang]),
+            h('p', { className: 'tape-deck-current-subtitle' }, selected.subtitle[lang]))),
+        h('div', { className: 'tape-deck-transport' },
+          h('div', { className: 'tape-deck-transport-copy' },
+            h('p', { className: 'tape-deck-status', role: 'status', 'aria-live': 'polite', 'data-unsaved': dirty && !changePending }, text(status)),
+            h('p', { id: `${id}-apply-hint`, className: 'tape-deck-action-hint' }, text(actionHint))),
+          h('button', { type: 'button', className: 'tape-deck-insert', disabled: !canInsert, onClick: insert, 'aria-describedby': `${id}-apply-hint` },
+            icon(isCurrent && !dirty && !snapshot.error && !localError ? 'check' : 'insert'),
+            text(changePending ? 'saving' : isCurrent && !dirty && !snapshot.error && !localError ? settings.enabled ? 'playing' : 'inserted' : 'insert')))),
+      h('div', { className: 'tape-deck-tuning', role: 'group', 'aria-label': text('tune'), title: text('tuneHint') },
+        h('div', { className: 'tape-deck-tune-row' },
+          h('span', { className: 'tape-deck-tune-label' }, text('tune')),
+          ...controls.map(([key]) => h('button', { key, ref: node => { controlButtons.current[key] = node; }, type: 'button', className: 'tape-deck-knob',
+            'aria-expanded': active === key, 'aria-controls': active === key ? controlId : undefined, 'aria-label': text(key), disabled: editDisabled,
+            onClick: () => { if (active === key) closeControl(); else { if (key === 'tint') setColorText(params.tint); setActive(key); } } },
+            h('span', { className: 'tape-deck-knob-dot', 'aria-hidden': true }), text(key))),
+          h('button', { type: 'button', className: 'tape-deck-reset', disabled: editDisabled, title: text('resetHint'),
+            onClick: () => { const { enabled: _enabled, ...defaults } = selected.defaults; setEditor({ id: selected.id, draft: { ...defaults }, base: persistedSignature }); setActive(null); setNotice('resetNotice'); setLocalError(''); } }, text('reset'))),
+        active ? h('div', { key: active, id: controlId, className: 'tape-deck-control', role: 'group', 'aria-labelledby': `${id}-control-label` },
+          h('div', { className: 'tape-deck-control-heading' },
+            h('label', { id: `${id}-control-label`, htmlFor: `${id}-input` }, text(active)),
+            active !== 'tint' ? h('output', { className: 'tape-deck-value', htmlFor: `${id}-input` }, Number(params[active]).toFixed(2)) : null,
+            h('button', { type: 'button', className: 'tape-deck-close', 'aria-label': text('close'), title: text('close'), onClick: () => closeControl(true) }, icon('close'))),
+          h('p', { id: `${id}-control-hint`, className: 'tape-deck-control-hint' }, text(`${active}Hint`)),
+          active === 'tint' ? h(React.Fragment, null,
+            h('input', { ref: controlInput, id: `${id}-input`, type: 'text', className: 'tape-deck-hex', value: colorText,
+              spellCheck: false, autoComplete: 'off', maxLength: 7, 'aria-invalid': invalidColor, 'aria-describedby': `${id}-control-hint${invalidColor ? ` ${id}-color-error` : ''}`, disabled: editDisabled,
+              onChange: event => { const value = event.target.value; setColorText(value); if (validTint(value)) updateDraft({ tint: value.toLowerCase() }); } }),
+            invalidColor ? h('p', { id: `${id}-color-error`, className: 'tape-deck-notice tape-deck-error', role: 'status' }, text('tintInvalid')) : null)
+            : control ? h(React.Fragment, null,
+              h('input', { ref: controlInput, id: `${id}-input`, type: 'range', className: 'tape-deck-range', min: control[1], max: control[2], step: control[3], value: params[active],
+                'aria-valuetext': Number(params[active]).toFixed(2), 'aria-describedby': `${id}-control-hint`, disabled: editDisabled,
+                style: { '--deck-progress': `${Math.max(0, Math.min(100, (params[active] - control[1]) / (control[2] - control[1]) * 100))}%` },
+                onChange: event => updateDraft({ [active]: Number(event.target.value) }) }),
+              h('div', { className: 'tape-deck-range-ends', 'aria-hidden': true }, h('span', null, text(`${active}Low`)), h('span', null, text(`${active}High`)))) : null) : null),
+      hasPreviewError ? h('p', { className: 'tape-deck-notice', role: 'status' }, text('previewError')) : null,
+      snapshot.error || localError ? h('div', { className: 'tape-deck-notice tape-deck-error', role: 'alert' },
+        h('p', null, text('saveError')), h('p', null, String(snapshot.error || localError))) : null,
+      remoteConflict ? h('p', { className: 'tape-deck-notice', role: 'status' }, text('remote')) : null,
+      notice ? h('p', { className: 'tape-deck-notice', role: 'status' }, text(notice)) : null,
+      h('section', { className: 'tape-deck-drawer', 'aria-labelledby': `${id}-drawer` },
+        h('div', { className: 'tape-deck-drawer-heading' },
+          h('h3', { id: `${id}-drawer`, className: 'tape-deck-drawer-title' }, text('drawer')),
+          h('span', { className: 'tape-deck-count', 'aria-hidden': true }, String(CASSETTES.length).padStart(2, '0'))),
+        h('p', { className: 'tape-deck-drawer-subtitle' }, text('drawerHint')),
+        h('div', { className: 'tape-deck-grid' }, ...CASSETTES.map(tape => {
+          const selectedCard = tape.id === selected.id;
+          const installedCard = tape.id === settings.cassette;
+          const previewCard = selectedCard && audition;
+          const cardState = previewCard ? 'preview' : installedCard ? settings.enabled ? 'playing' : 'inserted' : null;
+          return h('button', { key: tape.id, type: 'button', className: 'tape-deck-card', 'aria-pressed': selectedCard, disabled: editDisabled,
+            'aria-label': `${text('choose')} ${tape.number} · ${tape.name[lang]}${cardState ? ` · ${text(cardState)}` : ''}`, onClick: () => choose(tape) },
+            h(Artwork, { tape }),
+            h('span', { className: 'tape-deck-card-copy' },
+              h('span', { className: 'tape-deck-card-name' }, tape.name[lang]), h('span', { className: 'tape-deck-card-number', 'aria-hidden': true }, tape.number)),
+            h('span', { className: 'tape-deck-card-meta' }, h('span', { className: 'tape-deck-card-mood' }, tape.mood[lang]),
+              h('span', { className: 'tape-deck-card-state', 'data-preview': previewCard, 'data-playing': installedCard && settings.enabled && !previewCard }, cardState ? text(cardState) : '\u00a0')));
+        })),
+        h('p', { className: 'tape-deck-drawer-note' }, text('chooseHint'))));
   };
 }
 
 
-// Compatibility adapter for the inspected DSH 0.2.1-rc.5 DOM, not a public slot contract.
-const FRAME = '.PIRFFq_frame';
-const SCOPE = '.PIRFFq_frame:has(> [data-local-ocean-background="071"])';
-const backgroundCSS = `
-${SCOPE} { isolation: isolate; background: var(--dsw-alias-bg-base) !important; }
-${SCOPE} > .PIRFFq_sidebarCol,
-${SCOPE} > .PIRFFq_centerCol,
-${SCOPE} > .PIRFFq_rightbarCol,
-${SCOPE} > .PIRFFq_bottomRow { position: relative; z-index: 1; }
-/* One continuous sea behind the session, not an opaque island in the center. */
-${SCOPE} > .PIRFFq_centerCol,
-${SCOPE} > .PIRFFq_centerCol .kiGsTW_root,
-${SCOPE} .kiGsTW_body,
-${SCOPE} .kiGsTW_scrollBody,
-${SCOPE} .kiGsTW_header,
-${SCOPE} .tnXGgG_column[data-chat-flow] {
-  background: transparent !important;
-  box-shadow: none !important;
-}
-${SCOPE} > .PIRFFq_sidebarCol,
-${SCOPE} > .PIRFFq_bottomRow {
-  background: color-mix(in srgb, var(--dsw-alias-bg-base) 15%, transparent) !important;
-}
-/* Keep the writing surface opaque: neither water nor scrolled messages bleed through.
-   Leave composer shells, native scrims, geometry and stacking entirely to DSH. */
-${SCOPE} [data-composer-card] {
-  background: var(--dsw-alias-bg-layer-1) !important;
-}
-/* Other main views and embedded tools remain safe opaque surfaces. */
-${SCOPE} .kiGsTW_viewArea:not(:has([data-chat-flow])),
-${SCOPE} > .PIRFFq_rightbarCol { background: var(--dsw-alias-bg-base); }
-${SCOPE} > [data-shell-overlay],
-${SCOPE} > [data-shell-leading] { z-index: 50; }
-
+// The only DSH-specific compatibility seam. Effects never receive these selectors.
+const FRAME='.PIRFFq_frame';
+const SCOPE='.PIRFFq_frame:has(> [data-local-ocean-background="080"])';
+const backgroundCSS=`
+${SCOPE}{isolation:isolate;background:var(--dsw-alias-bg-base)!important}
+${SCOPE}>.PIRFFq_sidebarCol,${SCOPE}>.PIRFFq_centerCol,${SCOPE}>.PIRFFq_rightbarCol,${SCOPE}>.PIRFFq_bottomRow{position:relative;z-index:1}
+${SCOPE}>.PIRFFq_centerCol,${SCOPE}>.PIRFFq_centerCol .kiGsTW_root,${SCOPE} .kiGsTW_body,${SCOPE} .kiGsTW_scrollBody,${SCOPE} .kiGsTW_header,${SCOPE} .tnXGgG_column[data-chat-flow]{background:transparent!important;box-shadow:none!important}
+${SCOPE}>.PIRFFq_sidebarCol,${SCOPE}>.PIRFFq_bottomRow{background:color-mix(in srgb,var(--dsw-alias-bg-base) 15%,transparent)!important}
+/* The writing surface always wins over decorative content. Do not touch native scrims/geometry. */
+${SCOPE} [data-composer-card]{background:var(--dsw-alias-bg-layer-1)!important}
+${SCOPE} .kiGsTW_viewArea:not(:has([data-chat-flow])),${SCOPE}>.PIRFFq_rightbarCol{background:var(--dsw-alias-bg-base)}
+${SCOPE}>[data-shell-overlay],${SCOPE}>[data-shell-leading]{z-index:50}
 `;
-
 window.__ModuleLoader__.load({
-  id: '@local/dsh-cursor-ripples',
-  factory(require) {
-    const React = require('react');
-    const { createPortal } = require('react-dom');
-    const h = React.createElement;
-    return {
-      inject: ['slots', 'theme', 'locale', 'configForms'],
-      apply(ctx) {
-        // The previous release did not own locale disposers; use a fresh namespace once.
-        const namespace = 'local-ocean-appearance-v061';
-        for (const [lang, dict] of Object.entries(PANEL_DICTS)) {
-          ctx.effect(() => ctx.locale.register(namespace, lang, dict));
-        }
-        const t = ctx.locale.bind(namespace);
-        const form = ctx.configForms.get('cursor-ripples');
-        const model = createAppearanceModel(form, APPEARANCE_DEFAULTS, normalizeAppearance, () => t('oceanSettings.saveError'));
-        ctx.effect(() => () => model.dispose());
-        const Preview = createOceanPreview(React, ctx, t);
-        const Page = createOceanSettingsPage({ React, ctx, model, t, Preview });
-        ctx.slots.inject('settings.section', () => ctx.slots.register({
-          name: 'settings.section', id: 'local-ocean-appearance', order: 30,
-          label: () => t('oceanSettings.title'),
-        }, Page));
-        ctx.slots.inject('shell.overlay', () => {
-          let canvas = null;
-          let field = null;
-          let renderer = null;
-          let frame = 0;
-          let previousTime = 0;
-          let elapsedTime = 0;
-          let accumulator = 0;
-          let lastPointer = null;
-          let bounds = null;
-          let disposed = false;
-          const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
-          const options = { passive: true, capture: true };
-          function stop() {
-            if (frame) window.cancelAnimationFrame(frame);
-            frame = 0;
-            previousTime = 0;
-            accumulator = 0;
-            lastPointer = null;
-          }
-          function release() {
-            stop();
-            if (renderer) renderer.dispose();
-            renderer = null;
-            field = null;
-          }
-          function draw(now) {
-            frame = 0;
-            if (!renderer || disposed || document.hidden || !model.getSnapshot().settings.enabled) return;
-            if (!previousTime || now - previousTime >= 1000 / 30 - 1) {
-              const elapsed = previousTime ? Math.min((now - previousTime) / 1000, .08) : 1 / 30;
-              previousTime = now;
-              if (!motion.matches) {
-                accumulator += elapsed * model.getSnapshot().settings.speed;
-                while (accumulator >= 1 / 60) { field.step(model.getSnapshot().settings.damping); accumulator -= 1 / 60; }
-                elapsedTime += elapsed * model.getSnapshot().settings.speed;
-              }
-              renderer.draw(elapsedTime, ctx.theme.getTheme().active.colorScheme === 'dark', model.getSnapshot().settings);
-            }
-            if (!motion.matches && model.getSnapshot().settings.speed > 0) frame = window.requestAnimationFrame(draw);
-          }
-          function start() {
-            if (!frame && renderer && !disposed && !document.hidden && document.hasFocus() && model.getSnapshot().settings.enabled) frame = window.requestAnimationFrame(draw);
-          }
-          function resize() {
-            release();
-            if (!canvas || disposed) return;
-            bounds = canvas.parentElement.getBoundingClientRect();
-            const width = Math.max(1, bounds.width);
-            const height = Math.max(1, bounds.height);
-            const ratio = Math.min(window.devicePixelRatio || 1, 1.25, 1100 / Math.max(width, height));
-            canvas.width = Math.max(1, Math.round(width * ratio));
-            canvas.height = Math.max(1, Math.round(height * ratio));
-            const cellSize = Math.max(width, height) / 320;
-            field = new WaterField(Math.max(32, Math.round(width / cellSize)), Math.max(32, Math.round(height / cellSize)));
-            try {
-              renderer = createOceanRenderer(canvas, field);
-              start();
-            } catch (error) {
-              console.warn('[Ocean background]', error);
-              canvas.style.visibility = 'hidden';
-            }
-          }
-          function disturb(event, click) {
-            if (!field || !renderer || motion.matches || disposed || document.hidden || !bounds || !model.getSnapshot().settings.enabled || model.getSnapshot().settings.speed === 0) return;
-            const now = window.performance.now();
-            const point = { x: event.clientX - bounds.left, y: event.clientY - bounds.top, time: now };
-            if (point.x < 0 || point.y < 0 || point.x > bounds.width || point.y > bounds.height) return;
-            if (!click && lastPointer && now - lastPointer.time < 16) return;
-            const previous = lastPointer && now - lastPointer.time < 120 ? lastPointer : point;
-            const steps = click ? 1 : Math.max(1, Math.min(20, Math.ceil(Math.hypot(point.x - previous.x, point.y - previous.y) / 7)));
-            const scale = field.width / bounds.width;
-            for (let step = 1; step <= steps; step += 1) {
-              const f = step / steps;
-              field.disturb((previous.x + (point.x - previous.x) * f) * scale,
-                (previous.y + (point.y - previous.y) * f) * field.height / bounds.height,
-                Math.max(1.8, (click ? 24 : 14) * scale), click ? .65 : .17);
-            }
-            lastPointer = point;
-          }
-          function onMove(event) { disturb(event, false); }
-          function onDown(event) { disturb(event, true); }
-          function onVisibility() { if (document.hidden) stop(); else start(); }
-          function onMotion() { stop(); start(); }
-          function onLost(event) { event.preventDefault(); stop(); }
-          function attach(node) {
-            if (canvas === node) return;
-            if (canvas) {
-              canvas.removeEventListener('webglcontextlost', onLost);
-              canvas.removeEventListener('webglcontextrestored', resize);
-            }
-            release();
-            canvas = node;
-            if (node) {
-              node.addEventListener('webglcontextlost', onLost);
-              node.addEventListener('webglcontextrestored', resize);
-              resize();
-            }
-          }
-          function OceanBackground() {
-            const { settings } = React.useSyncExternalStore(model.subscribe, model.getSnapshot, model.getSnapshot);
-            const marker = React.useRef(null);
-            const [target, setTarget] = React.useState(null);
-            React.useLayoutEffect(() => {
-              const candidate = marker.current?.closest(FRAME);
-              // Fail closed if the version-specific columns no longer match.
-              if (!candidate || !candidate.querySelector(':scope > .PIRFFq_centerCol') ||
-                  !candidate.querySelector(':scope > .PIRFFq_sidebarCol')) {
-                console.warn('[Ocean background] Unsupported DSH frame; no background mounted.');
-                return;
-              }
-              setTarget(candidate);
-            }, []);
-            return h(React.Fragment, null,
-              h('span', { ref: marker, hidden: true, 'data-ocean-adapter': '0.7.1' }),
-              target ? createPortal(h('div', {
-                'data-local-ocean-background': settings.enabled ? '071' : undefined, 'aria-hidden': true,
-                style: { position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none', overflow: 'hidden' },
-              },
-                h('style', null, backgroundCSS),
-                h('canvas', { ref: attach, style: { display: 'block', width: '100%', height: '100%', pointerEvents: 'none', opacity: settings.enabled ? settings.opacity : 0 } }),
-              ), target) : null,
-            );
-          }
-          return [
-            ctx.effect(() => {
-              window.addEventListener('pointermove', onMove, options);
-              window.addEventListener('pointerdown', onDown, options);
-              window.addEventListener('resize', resize);
-              window.addEventListener('blur', stop);
-              window.addEventListener('focus', start);
-              document.addEventListener('visibilitychange', onVisibility);
-              motion.addEventListener('change', onMotion);
-              const offModel = model.subscribe(onMotion);
-              const offTheme = ctx.on('theme/change', onMotion);
-              return () => {
-                disposed = true;
-                offModel(); offTheme();
-                window.removeEventListener('pointermove', onMove, options);
-                window.removeEventListener('pointerdown', onDown, options);
-                window.removeEventListener('resize', resize);
-                window.removeEventListener('blur', stop);
-                window.removeEventListener('focus', start);
-                document.removeEventListener('visibilitychange', onVisibility);
-                motion.removeEventListener('change', onMotion);
-                attach(null);
-              };
-            }),
-            ctx.slots.register({ name: 'shell.overlay', id: 'local-ocean-background-adapter-v071', order: -100 }, OceanBackground),
-          ];
-        });
-      },
-    };
+  id:'@local/dsh-cursor-ripples',
+  factory(require){
+    const React=require('react'),{createPortal}=require('react-dom'),h=React.createElement;
+    return {inject:['slots','theme','locale','configForms'],apply(ctx){
+      const namespace='local-background-tapes-v1';
+      for(const [lang,dict]of Object.entries(DECK_DICTS))ctx.effect(()=>ctx.locale.register(namespace,lang,dict));
+      const t=ctx.locale.bind(namespace);
+      const form=ctx.configForms.get('cursor-ripples');
+      const model=createAppearanceModel(form,DECK_DEFAULTS,normalizeDeckSettings,()=>t('deck.saveError'),deckPatchOperations);
+      ctx.effect(()=>()=>model.dispose());
+      const Surface=createEffectSurface(React,ctx);
+      const Page=createDeckPage({React,ctx,model,t,Surface});
+      ctx.slots.inject('settings.section',()=>ctx.slots.register({name:'settings.section',id:'local-ocean-appearance',order:30,label:()=>t('deck.title')},Page));
+      function Background(){
+        const marker=React.useRef(null),[target,setTarget]=React.useState(null),[failed,setFailed]=React.useState(false);
+        const {settings}=React.useSyncExternalStore(model.subscribe,model.getSnapshot,model.getSnapshot);
+        const cassette=settings.cassette;
+        React.useEffect(()=>setFailed(false),[cassette]);
+        React.useLayoutEffect(()=>{
+          const candidate=marker.current?.closest(FRAME);
+          if(!candidate||!candidate.querySelector(':scope > .PIRFFq_centerCol')){console.warn('[Background Tapes] Unsupported DSH frame; leaving native UI intact.');return;}
+          setTarget(candidate);
+        },[]);
+        return h(React.Fragment,null,
+          h('span',{hidden:true,ref:marker,'data-ocean-adapter':'0.8.0'}),
+          target?createPortal(h('div',{'data-local-ocean-background':settings.enabled&&!failed?'080':undefined,
+            'aria-hidden':true,style:{position:'absolute',inset:0,zIndex:0,pointerEvents:'none',overflow:'hidden'}},
+            h('style',null,backgroundCSS),
+            h(Surface,{key:cassette,cassette,params:getCassetteParams(settings),enabled:settings.enabled,preview:false,onError:()=>setFailed(true),onReady:()=>setFailed(false)})),target):null);
+      }
+      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v080-r2',order:-100},Background));
+    }};
   },
 });
 
