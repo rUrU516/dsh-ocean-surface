@@ -1,6 +1,6 @@
 # 海面 · 鼠标涟漪 / Ocean Surface · Cursor Ripples
 
-当前 **0.7.0**：统一淡水纹背景 + 沉浸式浮标调节页，不再罗列参数表。默认保留0.5.1的微亮观感。
+当前 **0.7.1**：统一淡水纹背景 + 沉浸式浮标调节页，不再罗列参数表。默认保留0.5.1的微亮观感。
 
 这是海面插件的独立仓库，不包含鲸鱼桌面挂件或其桥接插件。插件包名仍为 `@local/dsh-cursor-ripples`，以保持已安装配置的兼容性。
 
@@ -52,8 +52,8 @@ cd dsh-ocean-surface
 
 1. 应用框架形成独立堆叠上下文。
 2. React Portal把海面节点放到框架下，绝对定位 `z-index:0`。
-3. 工作列在 `z-index:1`。正文、会话外壳和输入区外壳透明，同片水面贯穿留白与正文。
-4. 输入卡片18%主题底色，侧栏/底部15%；非Chat视图和右侧工具保留正常背景。
+3. 工作列在 `z-index:1`。正文和会话外壳透明，同片水面贯穿留白与正文；输入区外壳及原生遮罩不再覆盖。
+4. 输入卡片使用不透明的主题 `bg-layer-1` 底色，隔绝水纹和背后的聊天文字；侧栏/底部15%，非Chat视图和右侧工具保留正常背景。
 5. 原生弹窗/提示层仍在上方，设置页预览位于自己的正式内容区。
 
 鼠标事件passive，背景Canvas `pointer-events:none`，不遮挡工作组件。关闭海面开关会移除用于激活兼容CSS的属性，从而恢复原生背景。
@@ -66,9 +66,9 @@ cd dsh-ocean-surface
 
 关键类：`.PIRFFq_frame`、三列容器、`.kiGsTW_root`、`.kiGsTW_header`、`.tnXGgG_column[data-chat-flow]`、`.kiGsTW_composerStack`。不改Chat测量几何/padding/width/margin、不操作会话数据。
 
-兼容CSS仅在框架有直属标记 `data-local-ocean-background="070"` 时生效。框架/列结构不匹配不挂载，卸载清理Portal/style/listeners/RAF/GL。**DSH升级可能需要重新适配，其他插件可能使用不同表面结构。**
+兼容CSS仅在框架有直属标记 `data-local-ocean-background="071"` 时生效。框架/列结构不匹配不挂载，卸载清理Portal/style/listeners/RAF/GL。**DSH升级可能需要重新适配，其他插件可能使用不同表面结构。**
 
-背景生命周期入口 `local-ocean-background-adapter-v070` 虽登记于 `shell.overlay`，可见画布实际Portal到底层，并不在组件上方盖光影。
+背景生命周期入口 `local-ocean-background-adapter-v071` 虽登记于 `shell.overlay`，可见画布实际Portal到底层，并不在组件上方盖光影。
 
 ## 开发
 
@@ -95,7 +95,7 @@ React/react-dom来自浏览器模块表，无额外React实例。背景30fps、�
 
 ## 部署与核验
 
-通过 `plugin_manager` 安装本目录，工具提示已有包时remove再install；关闭/卸载本插件撤销背景。0.7.0安装返回applied/warnings[]，Host Config已投射全部8项字段，Client新背景入口与设置页入口均active，工具已注册。
+通过 `plugin_manager` 安装本目录，工具提示已有包时remove再install；关闭/卸载本插件撤销背景。0.7.1安装返回applied/warnings[]，Host Config全部字段保留，真实Client背景入口 `local-ocean-background-adapter-v071` 已确认active。Host在可选的 `clientModules` 服务可用时调用 `rebuilt` 发布已完成的Client构建，避免仅Host更新而页面继续旧代码；仍需检查live Client版本，不能只看安装成功。linked目录迁移时当前DSH可能缓存旧路径，必要时需重启DSH重新解析。
 
 构建、JS语法、22项测试、manifest资源/双语文案检查通过；经真实工具读取观察到面板选色已进入Host配置；同值亮度写入成功，未重置用户正在选择的配色。
 

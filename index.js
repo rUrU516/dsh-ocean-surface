@@ -14,6 +14,13 @@ export const Config = z.object({
 
 export function apply(ctx, config) {
   ctx.effect(() => ctx.settings.configure({ auto: false }));
+  // A linked bundle can be rebuilt without the web development watcher.
+  // Publish its completed artifact through the supported registry hook; this
+  // changes the revisioned URL and notifies connected Clients via normal HMR.
+  // Optional dependency keeps Host-only environments working as before.
+  ctx.inject(['clientModules'], (web) => {
+    web.clientModules.rebuilt('@local/dsh-cursor-ripples');
+  });
   const read = () => normalizeAppearance(Object.fromEntries(Object.keys(APPEARANCE_DEFAULTS).map((key) => [key, config[key].get()])));
   ctx.tools.register({
     name: 'ocean_appearance',

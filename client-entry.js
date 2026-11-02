@@ -7,7 +7,7 @@ import { createOceanSettingsPage, PANEL_DICTS } from './settings-panel.js';
 
 // Compatibility adapter for the inspected DSH 0.2.1-rc.5 DOM, not a public slot contract.
 const FRAME = '.PIRFFq_frame';
-const SCOPE = '.PIRFFq_frame:has(> [data-local-ocean-background="070"])';
+const SCOPE = '.PIRFFq_frame:has(> [data-local-ocean-background="071"])';
 const backgroundCSS = `
 ${SCOPE} { isolation: isolate; background: var(--dsw-alias-bg-base) !important; }
 ${SCOPE} > .PIRFFq_sidebarCol,
@@ -20,22 +20,18 @@ ${SCOPE} > .PIRFFq_centerCol .kiGsTW_root,
 ${SCOPE} .kiGsTW_body,
 ${SCOPE} .kiGsTW_scrollBody,
 ${SCOPE} .kiGsTW_header,
-${SCOPE} .kiGsTW_composerSeat,
-${SCOPE} .kiGsTW_composerStack,
-${SCOPE} .kiGsTW_composerSeat .JZLxKW_root,
 ${SCOPE} .tnXGgG_column[data-chat-flow] {
   background: transparent !important;
   box-shadow: none !important;
 }
-${SCOPE} .kiGsTW_composerSeat::before,
-${SCOPE} .kiGsTW_composerSeat::after { background: none !important; }
 ${SCOPE} > .PIRFFq_sidebarCol,
 ${SCOPE} > .PIRFFq_bottomRow {
   background: color-mix(in srgb, var(--dsw-alias-bg-base) 15%, transparent) !important;
 }
-/* Inputs retain their border and shape, but reveal the same underlying wave field. */
+/* Keep the writing surface opaque: neither water nor scrolled messages bleed through.
+   Leave composer shells, native scrims, geometry and stacking entirely to DSH. */
 ${SCOPE} [data-composer-card] {
-  background: color-mix(in srgb, var(--dsw-alias-bg-base) 18%, transparent) !important;
+  background: var(--dsw-alias-bg-layer-1) !important;
 }
 /* Other main views and embedded tools remain safe opaque surfaces. */
 ${SCOPE} .kiGsTW_viewArea:not(:has([data-chat-flow])),
@@ -183,9 +179,9 @@ window.__ModuleLoader__.load({
               setTarget(candidate);
             }, []);
             return h(React.Fragment, null,
-              h('span', { ref: marker, hidden: true, 'data-ocean-adapter': '0.7.0' }),
+              h('span', { ref: marker, hidden: true, 'data-ocean-adapter': '0.7.1' }),
               target ? createPortal(h('div', {
-                'data-local-ocean-background': settings.enabled ? '070' : undefined, 'aria-hidden': true,
+                'data-local-ocean-background': settings.enabled ? '071' : undefined, 'aria-hidden': true,
                 style: { position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none', overflow: 'hidden' },
               },
                 h('style', null, backgroundCSS),
@@ -217,7 +213,7 @@ window.__ModuleLoader__.load({
                 attach(null);
               };
             }),
-            ctx.slots.register({ name: 'shell.overlay', id: 'local-ocean-background-adapter-v070', order: -100 }, OceanBackground),
+            ctx.slots.register({ name: 'shell.overlay', id: 'local-ocean-background-adapter-v071', order: -100 }, OceanBackground),
           ];
         });
       },
