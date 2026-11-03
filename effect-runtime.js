@@ -1,18 +1,19 @@
 import { getCassetteEntry } from './cassette-registry.js';
 
 /** Backing resolution is bounded; effect coordinates stay in CSS pixels. */
-export function effectSize(width,height,dpr=1,maxResolution=1100){
+export function effectSize(width,height,dpr=1,maxResolution=3200){
   width=Number.isFinite(width)?Math.max(0,width):0;
   height=Number.isFinite(height)?Math.max(0,height):0;
   if(!width||!height)return {width,height,pixelWidth:0,pixelHeight:0,scaleX:0,scaleY:0};
-  const limit=Number.isFinite(maxResolution)?Math.max(1,Math.min(1100,maxResolution)):1100;
-  const ratio=Math.min(Number.isFinite(dpr)&&dpr>0?dpr:1,1.5,limit/Math.max(width,height));
+  const limit=Number.isFinite(maxResolution)?Math.max(1,Math.min(3200,maxResolution)):3200;
+  // Tiny dots need device-pixel detail; cap area as well as the long edge.
+  const ratio=Math.min(Number.isFinite(dpr)&&dpr>0?dpr:1,2,limit/Math.max(width,height),Math.sqrt(6e6/(width*height)));
   const pixelWidth=Math.max(1,Math.round(width*ratio)),pixelHeight=Math.max(1,Math.round(height*ratio));
   return {width,height,pixelWidth,pixelHeight,scaleX:pixelWidth/width,scaleY:pixelHeight/height};
 }
 
 /** No tape-id branches: the registry provides a self-contained local factory. */
-export function createEffectRuntime({canvas,cassette,params,dark=false,reducedMotion=false,onError,maxResolution=1100}={}){
+export function createEffectRuntime({canvas,cassette,params,dark=false,reducedMotion=false,onError,maxResolution=3200}={}){
   const entry=getCassetteEntry(typeof cassette==='string'?cassette:cassette?.id);
   let settings=entry.normalize(params),size=effectSize(0,0),context=null,effect=null;
   let disposed=false,failed=false,reported=false;

@@ -7,7 +7,7 @@ export const DOTS_CASSETTE = Object.freeze({
   mood: Object.freeze({ zh: '蓝紫与藕粉之间的一点微光', en: 'A quiet shimmer between violet and rose' }),
   colors: Object.freeze(['#703ae6', '#bc4eda']),
   renderer: '2d', continuous: false,
-  defaults: Object.freeze({ tint: '#9071c1', opacity: .38, strength: 1, scale: 1, speed: .45 }),
+  defaults: Object.freeze({ tint: '#9071c1', opacity: .85, strength: 1, scale: 1, speed: .45 }),
   // The tape is a fixed art preset, not a settings panel.
   controls: Object.freeze([]),
 });
@@ -28,7 +28,7 @@ export function normalizeDotsParams(input = {}) {
   const bounded = (key, low, high) => dotsClamp(dotsFinite(source[key], defaults[key]), low, high);
   return {
     tint: typeof source.tint === 'string' && /^#[0-9a-f]{6}$/i.test(source.tint) ? source.tint.toLowerCase() : defaults.tint,
-    opacity: bounded('opacity', 0, .65), strength: bounded('strength', 0, 1.5),
+    opacity: bounded('opacity', 0, 1), strength: bounded('strength', 0, 1.5),
     scale: bounded('scale', .6, 1.8), speed: bounded('speed', 0, 1.5),
   };
 }

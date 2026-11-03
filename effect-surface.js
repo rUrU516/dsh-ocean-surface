@@ -36,7 +36,7 @@ export function createEffectSurface(React, ctx) {
         if(disposed||failed)return;
         const box=canvas.getBoundingClientRect();
         if(box.width<1||box.height<1)return;
-        try{runtime?.resize(box.width,box.height,Math.min(window.devicePixelRatio||1,preview?1:1.25));start();}catch(error){fail(error);}
+        try{runtime?.resize(box.width,box.height,Math.min(window.devicePixelRatio||1,2));start();}catch(error){fail(error);}
       }
       function refresh(){stop();if(!current.current.enabled)return;start();}
       function pointer(event){
@@ -58,7 +58,7 @@ export function createEffectSurface(React, ctx) {
         stop();runtime?.dispose();runtime=null;time=0;
         if(disposed)return;
         try{
-          runtime=createEffectRuntime({canvas,cassette,params:current.current.params,dark:dark(),reducedMotion:motion.matches,maxResolution:preview?600:1100,onError:fail});
+          runtime=createEffectRuntime({canvas,cassette,params:current.current.params,dark:dark(),reducedMotion:motion.matches,maxResolution:preview?1600:3200,onError:fail});
           if(failed){runtime?.dispose();runtime=null;return;}
           setFailure('');resize();
         }catch(error){fail(error);}

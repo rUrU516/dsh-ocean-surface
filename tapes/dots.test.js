@@ -30,7 +30,7 @@ dotsTest('the complete tape is Host-importable, immutable, localized and a fixed
   dotsAssert.equal(DOTS_CASSETTE.renderer, '2d');
   dotsAssert.equal(DOTS_CASSETTE.continuous, false);
   dotsAssert.deepEqual(DOTS_CASSETTE.controls, []);
-  dotsAssert.deepEqual(dotsParams, { tint: '#9071c1', opacity: .38, strength: 1, scale: 1, speed: .45 });
+  dotsAssert.deepEqual(dotsParams, { tint: '#9071c1', opacity: .85, strength: 1, scale: 1, speed: .45 });
   dotsAssert.ok(Object.isFrozen(DOTS_CASSETTE));
   dotsAssert.ok(Object.isFrozen(DOTS_CASSETTE.defaults));
   dotsAssert.ok(DOTS_CASSETTE.subtitle.zh && DOTS_CASSETTE.subtitle.en && DOTS_CASSETTE.mood.zh && DOTS_CASSETTE.mood.en);
@@ -39,7 +39,7 @@ dotsTest('the complete tape is Host-importable, immutable, localized and a fixed
 dotsTest('normalization clamps all original bounds and does not coerce invalid input', () => {
   dotsAssert.deepEqual(normalizeDotsParams(null), dotsParams);
   dotsAssert.deepEqual(normalizeDotsParams({ tint: '#AABBCC', opacity: 9, strength: 9, scale: 9, speed: 9, unknown: 8 }),
-    { tint: '#aabbcc', opacity: .65, strength: 1.5, scale: 1.8, speed: 1.5 });
+    { tint: '#aabbcc', opacity: 1, strength: 1.5, scale: 1.8, speed: 1.5 });
   dotsAssert.deepEqual(normalizeDotsParams({ opacity: -1, strength: -1, scale: -1, speed: -1 }),
     { tint: '#9071c1', opacity: 0, strength: 0, scale: .6, speed: 0 });
   dotsAssert.deepEqual(normalizeDotsParams({ tint: 'red', opacity: NaN, strength: Infinity, scale: '1', speed: null }), dotsParams);
@@ -147,7 +147,7 @@ dotsTest('strength zero removes lens, glow, enlargement and all additional sched
 
 dotsTest('opacity belongs to the outer surface, not the tape samples', () => {
   const transparent = dotsAt(0, { params: { opacity: 0 } });
-  const preview = dotsAt(0, { params: { opacity: .65 } });
+  const preview = dotsAt(0, { params: { opacity: 1 } });
   dotsAssert.deepEqual(transparent, preview);
 });
 

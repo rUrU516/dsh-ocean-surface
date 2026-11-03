@@ -30,7 +30,7 @@ const DOTS_CASSETTE = Object.freeze({
   mood: Object.freeze({ zh: '蓝紫与藕粉之间的一点微光', en: 'A quiet shimmer between violet and rose' }),
   colors: Object.freeze(['#703ae6', '#bc4eda']),
   renderer: '2d', continuous: false,
-  defaults: Object.freeze({ tint: '#9071c1', opacity: .38, strength: 1, scale: 1, speed: .45 }),
+  defaults: Object.freeze({ tint: '#9071c1', opacity: .85, strength: 1, scale: 1, speed: .45 }),
   // The tape is a fixed art preset, not a settings panel.
   controls: Object.freeze([]),
 });
@@ -51,7 +51,7 @@ function normalizeDotsParams(input = {}) {
   const bounded = (key, low, high) => dotsClamp(dotsFinite(source[key], defaults[key]), low, high);
   return {
     tint: typeof source.tint === 'string' && /^#[0-9a-f]{6}$/i.test(source.tint) ? source.tint.toLowerCase() : defaults.tint,
-    opacity: bounded('opacity', 0, .65), strength: bounded('strength', 0, 1.5),
+    opacity: bounded('opacity', 0, 1), strength: bounded('strength', 0, 1.5),
     scale: bounded('scale', .6, 1.8), speed: bounded('speed', 0, 1.5),
   };
 }
@@ -381,18 +381,19 @@ function createAppearanceModel(form, initial, normalize, failureMessage, toOpera
 
 
 /** Backing resolution is bounded; effect coordinates stay in CSS pixels. */
-function effectSize(width,height,dpr=1,maxResolution=1100){
+function effectSize(width,height,dpr=1,maxResolution=3200){
   width=Number.isFinite(width)?Math.max(0,width):0;
   height=Number.isFinite(height)?Math.max(0,height):0;
   if(!width||!height)return {width,height,pixelWidth:0,pixelHeight:0,scaleX:0,scaleY:0};
-  const limit=Number.isFinite(maxResolution)?Math.max(1,Math.min(1100,maxResolution)):1100;
-  const ratio=Math.min(Number.isFinite(dpr)&&dpr>0?dpr:1,1.5,limit/Math.max(width,height));
+  const limit=Number.isFinite(maxResolution)?Math.max(1,Math.min(3200,maxResolution)):3200;
+  // Tiny dots need device-pixel detail; cap area as well as the long edge.
+  const ratio=Math.min(Number.isFinite(dpr)&&dpr>0?dpr:1,2,limit/Math.max(width,height),Math.sqrt(6e6/(width*height)));
   const pixelWidth=Math.max(1,Math.round(width*ratio)),pixelHeight=Math.max(1,Math.round(height*ratio));
   return {width,height,pixelWidth,pixelHeight,scaleX:pixelWidth/width,scaleY:pixelHeight/height};
 }
 
 /** No tape-id branches: the registry provides a self-contained local factory. */
-function createEffectRuntime({canvas,cassette,params,dark=false,reducedMotion=false,onError,maxResolution=1100}={}){
+function createEffectRuntime({canvas,cassette,params,dark=false,reducedMotion=false,onError,maxResolution=3200}={}){
   const entry=getCassetteEntry(typeof cassette==='string'?cassette:cassette?.id);
   let settings=entry.normalize(params),size=effectSize(0,0),context=null,effect=null;
   let disposed=false,failed=false,reported=false;
@@ -478,7 +479,7 @@ function createEffectSurface(React, ctx) {
         if(disposed||failed)return;
         const box=canvas.getBoundingClientRect();
         if(box.width<1||box.height<1)return;
-        try{runtime?.resize(box.width,box.height,Math.min(window.devicePixelRatio||1,preview?1:1.25));start();}catch(error){fail(error);}
+        try{runtime?.resize(box.width,box.height,Math.min(window.devicePixelRatio||1,2));start();}catch(error){fail(error);}
       }
       function refresh(){stop();if(!current.current.enabled)return;start();}
       function pointer(event){
@@ -500,7 +501,7 @@ function createEffectSurface(React, ctx) {
         stop();runtime?.dispose();runtime=null;time=0;
         if(disposed)return;
         try{
-          runtime=createEffectRuntime({canvas,cassette,params:current.current.params,dark:dark(),reducedMotion:motion.matches,maxResolution:preview?600:1100,onError:fail});
+          runtime=createEffectRuntime({canvas,cassette,params:current.current.params,dark:dark(),reducedMotion:motion.matches,maxResolution:preview?1600:3200,onError:fail});
           if(failed){runtime?.dispose();runtime=null;return;}
           setFailure('');resize();
         }catch(error){fail(error);}
@@ -790,7 +791,7 @@ window.__ModuleLoader__.load({
             h('style',null,backgroundCSS),
             h(Surface,{key:cassette,cassette,params:getCassetteParams(settings),enabled:settings.enabled,preview:false,onError:()=>setFailed(true),onReady:()=>setFailed(false)})),target):null);
       }
-      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v081-dots-violet',order:-100},Background));
+      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v081-dots-clear',order:-100},Background));
     }};
   },
 });
