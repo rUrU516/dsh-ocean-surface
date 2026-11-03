@@ -18,13 +18,22 @@ test('invalid or zero dimensions do not allocate, thin dimensions stay valid',()
 });
 test('runtime lazy before sizing and accepts descriptor without browser resources',()=>{
   const errors=[];
-  for(const cassette of ['dot-field',getCassette('dot-field')]){
+  for(const cassette of ['dot-field',getCassette('dot-field'),'ocean-surface',getCassette('ocean-surface')]){
     const runtime=createEffectRuntime({cassette,onError:e=>errors.push(e)});
     assert.equal(runtime.frame(.016,0),false);runtime.resize(0,0);
     runtime.update({params:{strength:.8},dark:true,reducedMotion:true});runtime.pointer({x:.5,y:.5,type:'down'});
     assert.equal(runtime.frame(.016,1),false);runtime.dispose();runtime.dispose();
   }
   assert.deepEqual(errors,[]);
+});
+test('unavailable contexts fail once for either registered renderer without taking down the UI',()=>{
+  for(const cassette of ['dot-field','ocean-surface']){
+    const errors=[];
+    const runtime=createEffectRuntime({cassette,onError:error=>errors.push(error)});
+    runtime.resize(800,600);runtime.resize(800,600);
+    assert.equal(runtime.frame(.016,0),false);
+    assert.equal(errors.length,1);runtime.dispose();
+  }
 });
 test('missing resource reports once even with synchronous disposal in reporter',()=>{
   let errors=0,runtime;

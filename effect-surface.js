@@ -88,6 +88,6 @@ export function createEffectSurface(React, ctx) {
     },[cassette,preview]);
     return h('div',{style:{position:'relative',width:'100%',height:'100%',overflow:'hidden'},'data-effect-surface':cassette},
       h('canvas',{key:cassette,ref:canvasRef,'aria-hidden':true,style:{display:'block',width:'100%',height:'100%',opacity:enabled&&!failure?(displayOpacity??params.opacity):0,pointerEvents:preview?'auto':'none'}}),
-      preview&&failure?h('p',{role:'status',style:{position:'absolute',bottom:12,left:16,right:16,fontSize:11,color:'var(--dsw-alias-label-secondary)'}},ctx.locale.getSnapshot().active?.startsWith('zh')?'Dots 暂不可用，请重新打开设置或刷新页面。':'Dots is unavailable. Reopen settings or refresh the page.'):null);
+      preview&&failure?h('p',{role:'status',style:{position:'absolute',bottom:12,left:16,right:16,fontSize:11,color:'var(--dsw-alias-label-secondary)'}},ctx.locale.getSnapshot().active?.startsWith('zh')?'背景预览暂不可用，请重新打开设置或刷新页面。':'Background preview is unavailable. Reopen settings or refresh the page.'):null);
   };
 }

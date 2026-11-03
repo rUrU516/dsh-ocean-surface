@@ -18,6 +18,9 @@ export const Config=z.object({
     tint:z.string().default('#9071c1'),opacity:z.number().min(0).max(1).default(.85),
     strength:z.number().min(0).max(1.5).default(1),scale:z.number().min(.6).max(1.8).default(1),
     speed:z.number().min(0).max(1.5).default(.45),
+    brightness:z.number().min(.5).max(2).default(1.57),
+    waveStrength:z.number().min(0).max(2).default(2),
+    damping:z.number().min(0).max(1).default(.74),
   })).default({}).volatile(),
 });
 export function apply(ctx,config){

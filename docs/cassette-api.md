@@ -1,71 +1,100 @@
 # Background Tapes — Cassette API v1
 
-Version **0.8.1**, branch `feat/cassette-deck`. This is an **internal built-in effect contract**, not a third-party code loader. This version contains only **Dots** (`dot-field`), with one finished preset and no user- or Agent-facing parameter controls. Space Membrane, Quiet Contours and Ocean Surface are removed from the registry, UI and runtime. Legacy values may remain inert for compatibility; old implementations are available in Git history.
+Version **0.8.2**, branch `feat/cassette-deck`. Two fixed built-ins: Dots (`dot-field`) and the restored original Ocean Surface (`ocean-surface`). This is our plugin's internal extension contract, **not an official DSH background API or third-party code loader**. Neither tape exposes user/Agent parameter tuning.
 
-## Source organization and boundaries
+## One local source module per tape
 
-Each cassette belongs in **one local source module**. The sole [Dots module](<../tapes/dots.js>) owns its descriptor, parameter normalizer and runtime factory. The descriptor provides localized identity, artwork metadata and fixed preset values; normalization validates compatible persisted inputs, not a public tuning API.
+| Tape | Local source | Rendering |
+| --- | --- | --- |
+| Dots / 点阵 | [tapes/dots.js](<../tapes/dots.js>) | Canvas2D, pointer-local dots and violet glow; no resting grid |
+| Ocean Surface / 海面水波 | [tapes/ocean.js](<../tapes/ocean.js>) | WebGL, original finite-difference pointer waves and sea-surface shader |
 
-- [Catalog](<../cassette-catalog.js>): explicit static registration, descriptor lookup and legacy settings compatibility. Only Dots is registered.
-- [Runtime adapter](<../effect-runtime.js>): resolves the registered factory and supplies the Canvas2D context and plain inputs. It does not contain per-tape rendering branches or browser scheduling.
-- [Surface adapter](<../effect-surface.js>): owns canvas size, ResizeObserver, requestAnimationFrame, pointer filtering, visibility/focus, reduced motion, theme changes and disposal. It stops scheduling once the effect settles.
-- [Client entry](<../client-entry.js>): the sole DSH layout adapter and public settings slot registration. Chat text and input never become rendering inputs.
-- [Deck](<../deck-panel.js>): one real audition surface, a static tape card, global power and explicit use. No sliders, color editor, tuning draft or reset panel.
+Each module owns its descriptor, fixed preset, normalizer and factory. Ocean's simulation and shader are in that same module; archived root renderers are not imported. The [registry](<../cassette-registry.js>) explicitly imports known tapes; files are not discovered automatically. [Build](<../build.js>) bundles the sources into one [Client artifact](<../client.js>), not independently loaded tape packages.
 
-[Build](<../build.js>) statically bundles the local modules into a **single [client.js](<../client.js>) artifact**. A tape module is not an independently installed package. There is no runtime directory scan, remote script loader, eval, pasted JavaScript or arbitrary dynamic import. Source modularity does not expand the code trust boundary.
-
-## Runtime lifecycle
-
-The surface uses the existing runtime adapter API:
+## What the base supplies to a tape
 
 ```js
-const effect = createEffectRuntime({
-  canvas, cassette: 'dot-field', params,
-  dark: true, reducedMotion: false,
-  maxResolution: 1100, onError,
+const effect = createDotsEffect({
+  context,       // CanvasRenderingContext2D for renderer:'2d'; WebGLRenderingContext for 'webgl'
+  params,        // fixed descriptor defaults, not public editable settings
+  dark,          // boolean: active theme
+  reducedMotion, // boolean: system reduced-motion preference
 });
-effect.resize(cssWidth, cssHeight, devicePixelRatio);
-effect.update({ params, dark, reducedMotion });
-effect.pointer({ x: 0.5, y: 0.5, type: 'move', time: 1.2 });
-const needsNextFrame = effect.frame(deltaSeconds, elapsedSeconds);
-effect.dispose();
 ```
 
-The runtime adapter supplies a Canvas2D context to the registered factory. The effect receives no DSH context, DOM root, global event listener or independent animation loop. Browser resources and scheduling remain in the surface adapter.
+Ocean exposes the same signature as `createOceanEffect`. The base acquires the selected context on a fresh canvas. A tape does not receive DSH context, React, chat content, DOM roots, Settings services or an independent RAF loop. There is no public resize callback/event bus to register; the base calls the lifecycle below.
 
-Pointer coordinates are normalized `[0,1]`; `type` is `move | down | leave`. The adapter supplies monotonic active time in seconds and clamps delta to avoid background-tab jumps. Effects return `false` after settling; pointer, size, settings or theme changes may wake scheduling again. `dispose` must be idempotent. Resize must not attach global resources. Rendering errors leave the native application usable.
+### Tape descriptor
 
-Only one effect canvas renders per surface: the application background and, while settings is open, one audition surface. The tape cover is static SVG, not a second live scene. Audition passes `displayOpacity: 1` to the surface so the stage is not a faint imitation of the chat background. The application background retains the fixed preset's saved opacity.
+`id`, `number`, `source`, localized `name/subtitle/mood`, `colors`, `renderer`, `continuous`, `defaults`, `controls: []`.
 
-## Fixed preset and persistence
+Optional `contextAttributes` declares native canvas context options; optional `maxResolution` lowers that tape's backing long-edge budget (Ocean: 1100). `continuous` describes the artwork; **the actual `frame()` return value governs scheduling**. Artwork covers are static SVG in the deck, not another effect instance.
 
-Package identity remains `@local/dsh-cursor-ripples`; the settings namespace remains `cursor-ripples`. The active descriptor is `dot-field`, and its fixed defaults are authored in the [Dots module](<../tapes/dots.js>). UI callers use those defaults rather than exposing or editing old saved parameter values.
+### Lifecycle returned by each tape
 
-The existing selection and nested storage shape remains:
+| Method | Meaning |
+| --- | --- |
+| `resize(cssWidth, cssHeight)` | CSS-pixel dimensions; the base owns backing resolution |
+| `update({ params, dark, reducedMotion })` | Synchronize plain values; does not persist settings |
+| `pointer({ x, y, type, time })` | Normalized coordinates `[0,1]`, `move/down/leave`, active seconds |
+| `frame(dt, time) → boolean` | Draw one frame; time units are seconds; return whether another frame is needed |
+| `dispose()` | Release tape-owned resources; must be idempotent |
+
+Dots stops RAF after interaction settles. Ocean animates ambient swells while visible/focused; reduced motion renders a static surface and ignores pointer forcing. The base pauses both on hidden/blurred windows and on global power-off. A context loss disables that surface; restoration recreates its runtime.
+
+## Base adapter API
+
+The [runtime adapter](<../effect-runtime.js>) resolves the registry and creates a tape:
+
+```js
+const runtime = createEffectRuntime({
+  canvas, cassette: 'ocean-surface', params,
+  dark: true, reducedMotion: false,
+  maxResolution: 3200, onError,
+});
+runtime.resize(cssWidth, cssHeight, devicePixelRatio);
+runtime.update({ params, dark, reducedMotion });
+runtime.pointer({ x: .5, y: .5, type: 'move', time: 1.2 });
+const needsNextFrame = runtime.frame(deltaSeconds, activeSeconds);
+runtime.dispose();
+```
+
+Renderer branches are generic (`2d`/`webgl`), not tape-id branches. For 2D, the base sets CSS-pixel transforms and clears each frame; WebGL tapes own viewport/clear/draw commands and use native drawing-buffer size. The global backing limits are DPR 2, longest edge 3200 and approximately six million pixels; descriptor limits can reduce this. Preview uses a 1600px long-edge budget before per-tape limits.
+
+The [surface adapter](<../effect-surface.js>) owns canvas DOM, ResizeObserver, RAF (at most 30 draw calls/sec), pointer routing, theme, focus/visibility, reduced motion, cleanup, error/ready callbacks and outer opacity. The [Client entry](<../client-entry.js>) alone owns DSH layout/Settings registration. The composer remains opaque.
+
+## Selection, preview and persistence
+
+The [deck](<../deck-panel.js>) provides an audition selection separate from the active tape. Choosing a card does not save; **Use this tape** writes the fixed preset through [cassettePatch](<../cassette-catalog.js>) and shared [path operations](<../cassette-operations.js>). Global `enabled` is independent; insertion never powers the background on. Read-only, saving and save-failure states remain explicit.
+
+Package name stays `@local/dsh-cursor-ripples`; Settings namespace stays `cursor-ripples`. UI and Agent share Host Settings, not localStorage. Stored shape:
 
 ```json
 {
-  "cassette": "dot-field",
+  "enabled": true,
+  "cassette": "ocean-surface",
   "cassetteSettings": {
-    "dot-field": { "...": "fixed descriptor defaults" }
+    "dot-field": { "...": "Dots fixed preset" },
+    "ocean-surface": { "...": "Ocean fixed preset" }
   }
 }
 ```
 
-Legacy ocean fields and old tape values are inert compatibility data: they are not listed as cassettes, displayed as controls or passed into removed renderers. Unknown or retired selections resolve to Dots. Compatibility retention does not promise that old effects still run.
+`getCassetteParams()` always resolves descriptor defaults. Historical variations do not tune the live effect. Top-level pre-deck ocean fields remain inert and are not overwritten during insertion. Unknown retired ids fall back to Dots.
 
-Audition never writes shared settings. **Use Dots** writes the selection and fixed preset through the existing `cassettePatch` / Settings path operations; no whole-drawer replacement is needed. The global `enabled` state remains independent and is taken from the latest accepted state, not a stale audition snapshot. Save errors and read-only state are explicit. Neither an audition nor an insertion implicitly turns the background on.
+## User / Agent API
 
-The module exports `DECK_DICTS` and `createDeckPage` remain unchanged. They do not expose a parameter editor or alter the persistence protocol.
+`background_tapes`:
 
-## Agent interface
+| Call | Result |
+| --- | --- |
+| `{ "action": "list" }` | Available tape ids, localized identity, local source paths and fixed flag |
+| `{ "action": "get" }` | Accepted active tape, global power and fixed preset |
+| `{ "action": "insert", "cassette": "dot-field" }` | Select Dots; also accepts `ocean-surface`; preserves global power |
+| `{ "action": "enable", "enabled": false }` | Change global power without changing the selected tape |
 
-`background_tapes` supports only `list/get/insert/enable`. `list` exposes Dots; insertion selects its fixed preset. No `update`, `reset` or arbitrary parameter input is exposed. The former `ocean_appearance` tool is removed; legacy values remain only as inert Config compatibility data, not an alternate editing API.
+No `update`, `reset`, color/strength editing, filesystem import or arbitrary JavaScript execution API is exposed. The former `ocean_appearance` tool is not restored.
 
-## Compatibility and verification
+## Scope and verification boundary
 
-Settings use the public `settings.section` slot. Background placement remains a user-authorized, version-specific adapter for DSH `0.2.1-rc.5`, not a stable official background API. The composer card remains opaque; the effect does not change chat geometry or theme tokens.
-
-This internal API is not a public stability promise for third-party extensions. Future registration would need explicit compatibility, disposal and trust design; a narrow-looking factory signature alone does not make arbitrary JavaScript safe.
-
-See the [verification record](<./verification.md>) for the distinction between this round's checks, historical 0.8.0 results, pending installation and unavailable browser visual verification.
+The Settings section uses DSH's public slot. Background placement is still a version-specific adapter for DSH `0.2.1-rc.5`, not a stable official background API. No replacement server or DSH core edits are used. See the [verification record](<./verification.md>) for unit/static/live-registration results; these are not live GPU or screenshot verification.

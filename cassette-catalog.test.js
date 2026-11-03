@@ -5,10 +5,20 @@ import {createAppearanceModel,applySettingsOps} from './appearance-model.js';
 import {deckPatchOperations} from './cassette-operations.js';
 import {setTimeout as delay} from 'node:timers/promises';
 
-test('only Dots is registered and its source is one local tape file',()=>{
-  assert.deepEqual(CASSETTES.map(c=>c.id),['dot-field']);
-  assert.deepEqual(CASSETTES[0].controls,[]);
+test('Dots and original Ocean each register one fixed local tape file',()=>{
+  assert.deepEqual(CASSETTES.map(c=>c.id),['dot-field','ocean-surface']);
+  for(const tape of CASSETTES)assert.deepEqual(tape.controls,[]);
   assert.equal(CASSETTES[0].source,'tapes/dots.js');
+  assert.equal(CASSETTES[1].source,'tapes/ocean.js');
+});
+test('Ocean selection persists independently without changing Dots or global power',()=>{
+  const state=normalizeDeckSettings({enabled:false,cassette:'ocean-surface',cassetteSettings:{'dot-field':{opacity:.1},'ocean-surface':{tint:'#000000'}}});
+  assert.equal(state.cassette,'ocean-surface');
+  assert.deepEqual(getCassetteParams(state),CASSETTES[1].defaults);
+  const patch=cassettePatch(state,'ocean-surface');
+  assert.equal(patch.cassetteSettings['dot-field'].opacity,.1);
+  assert.deepEqual(patch.cassetteSettings['ocean-surface'],CASSETTES[1].defaults);
+  assert.ok(!('enabled' in patch));
 });
 test('retired ids migrate to Dots but legacy ocean data remains inert and untouched',()=>{
   const old={enabled:false,tint:'#393c3c',brightness:1.54,opacity:.5,waveStrength:1,speed:.55,damping:.74,cassette:'ocean'};
@@ -26,6 +36,16 @@ test('fixed Dots ignores old saved variations and incoming insertion parameters'
   assert.deepEqual(patch.cassetteSettings['dot-field'],CASSETTES[0].defaults);
   assert.ok(!('enabled'in patch));
   assert.ok(!('ripple'in state.cassetteSettings));
+});
+test('insertion targets only the selected fixed tape, not the other tape or global power',()=>{
+  const state=normalizeDeckSettings({enabled:false,cassette:'dot-field',cassetteSettings:{'dot-field':{opacity:.1},'ocean-surface':{}}});
+  const patch=cassettePatch(state,'ocean-surface');
+  const operations=deckPatchOperations(patch,state);
+  assert.deepEqual(operations.map(op=>op.path),[['cassette'],['cassetteSettings','ocean-surface']]);
+  const result=applySettingsOps(state,operations);
+  assert.equal(result.cassette,'ocean-surface');
+  assert.equal(result.enabled,false);
+  assert.deepEqual(result.cassetteSettings['dot-field'],state.cassetteSettings['dot-field']);
 });
 test('normalization handles missing, malformed and unknown settings without arbitrary keys',()=>{
   assert.deepEqual(normalizeDeckSettings(null),normalizeDeckSettings({}));

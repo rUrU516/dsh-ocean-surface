@@ -15,6 +15,8 @@ export function effectSize(width,height,dpr=1,maxResolution=3200){
 /** No tape-id branches: the registry provides a self-contained local factory. */
 export function createEffectRuntime({canvas,cassette,params,dark=false,reducedMotion=false,onError,maxResolution=3200}={}){
   const entry=getCassetteEntry(typeof cassette==='string'?cassette:cassette?.id);
+  const renderer=entry.descriptor.renderer;
+  const resolution=Math.min(maxResolution,entry.descriptor.maxResolution||3200);
   let settings=entry.normalize(params),size=effectSize(0,0),context=null,effect=null;
   let disposed=false,failed=false,reported=false;
   function report(reason){
@@ -26,15 +28,16 @@ export function createEffectRuntime({canvas,cassette,params,dark=false,reducedMo
   function ensure(){
     if(effect)return;
     if(!canvas||typeof canvas.getContext!=='function')throw new Error('An effect runtime requires a canvas with getContext().');
-    context=canvas.getContext('2d',{alpha:true});
-    if(!context)throw new Error('Canvas2D unavailable.');
+    if(!['2d','webgl'].includes(renderer))throw new Error(`Unsupported renderer: ${renderer}`);
+    context=canvas.getContext(renderer,entry.descriptor.contextAttributes||{alpha:true});
+    if(!context)throw new Error(`${renderer} unavailable.`);
     effect=entry.create({context,params:settings,dark,reducedMotion});
     effect.resize(size.width,size.height);
   }
   return {
     resize(width,height,dpr=1){
       if(disposed||failed)return;
-      size=effectSize(width,height,dpr,maxResolution);
+      size=effectSize(width,height,dpr,resolution);
       if(!size.pixelWidth||!size.pixelHeight)return;
       try{
         if(!canvas)throw new Error('An effect runtime requires a canvas.');
@@ -54,7 +57,11 @@ export function createEffectRuntime({canvas,cassette,params,dark=false,reducedMo
     frame(dt,time){
       if(disposed||failed||!size.pixelWidth||!size.pixelHeight)return false;
       try{
-        ensure();context.setTransform(size.scaleX,0,0,size.scaleY,0,0);context.clearRect(0,0,size.width,size.height);
+        ensure();
+        if(renderer==='2d'){
+          context.setTransform(size.scaleX,0,0,size.scaleY,0,0);
+          context.clearRect(0,0,size.width,size.height);
+        }
         return effect.frame(dt,time);
       }catch(error){fail(error);return false;}
     },

@@ -1,60 +1,41 @@
-# 0.8.1 verification record — Dots only
+# 0.8.2 verification record — Dots + original Ocean
 
-Date: 2026-11-03 (Asia/Shanghai). Branch: `feat/cassette-deck`. This work does not change `main` or a formal Release.
+Date: 2026-11-03 (Asia/Shanghai). Branch `feat/cassette-deck`; `main` and formal Release unchanged.
 
-## Latest: local-only reveal
+## Delivered scope
 
-The user found the resting grid visually busy. Resting dots are now not drawn at all. Only dots inside the existing 160 CSSpx lens are revealed, using a smooth `(1-q²)²` visibility envelope multiplied by pointer presence. The central brightness, geometry and glow remain unchanged; pointer leave fades dots and the broad glow to zero. Pure regressions verify no distant/resting dots, a continuous edge, and exit fade. **51 tests pass** and the live Client slot `local-background-tapes-adapter-v081-dots-local` is active. Final visual acceptance remains user-confirmed, not an automated screenshot claim.
+- Preserve the latest Dots behavior: only pointer-local dots and glow, no resting grid.
+- Restore the original sea-surface shader and finite-difference pointer simulation as the second fixed cassette `ocean-surface`.
+- One self-contained source module per tape; generic base supports Canvas2D and WebGL without tape-id renderer branches.
+- Two static original SVG covers, one live audition surface, explicit use and independent global power. No parameter UI or Agent tuning API.
+- API/source-path documentation updated in the README and Cassette API reference.
 
-## Visibility / clarity follow-up (earlier)
+## Build and automated checks
 
-The user supplied an actual chat screenshot showing dim and blurred dots. The previous surface multiplied canvas opacity 0.38 by base-dot alpha 0.5 (effective alpha 0.19), and the 1100px backing cap resampled fine dots on larger windows. The fixed tape now uses opacity **0.85** without changing dot spacing or lens geometry. Canvas budgets are **DPR ≤2, long edge ≤3200, area ≤6 million pixels**, preview long edge ≤1600. Existing idle/pause behavior remains. Final live registration `local-background-tapes-adapter-v081-dots-clear` is active; Host get reports opacity 0.85. All 49 tests pass after the change. No automated live screenshot was available, so actual final appearance still requires user confirmation.
+- `node build.js`, `node --check client.js`, `node --check index.js`, `node --check deck-panel.js`: passed.
+- `node --test *.test.js tapes/*.test.js`: **70/70 passed**.
+  - 18 Dots geometry/palette/visibility/interaction checks.
+  - 16 Ocean descriptor/simulation/shader/pointer/time/lifecycle checks.
+  - 7 catalog/fixed-preset/path-isolation checks.
+  - 7 generic size/resource/lifecycle checks.
+  - 22 retained legacy regression checks, not evidence old Settings controls run.
+- Ocean tests compare both shader strings with the original artwork and compare simulation heights/normal bytes against the original simulation. This establishes implementation continuity, not a live GPU render.
+- English/Chinese deck dictionaries each have 26 matching keys. Metadata resources, exports and local source paths exist; the original SVG icon is retained.
+- Static checks find exactly one audition Surface, no range/color controls and the v082 Client marker. `git diff --check`: passed.
 
-## Scope of this round
+## Current DSH activation
 
-- Only Dots (`dot-field`) remains in the catalog, UI and runtime.
-- Dots targets a dense blue-violet → pink-violet dot field, a broad magnifying lens and soft glow. This is an implementation direction, **not a claim of completed screenshot matching**.
-- The effect is a fixed preset. No user or Agent tuning, color editor, sliders or reset API remains.
-- One local tape module owns descriptor, normalizer and factory; runtime adaptation and browser scheduling remain separate. The final browser distribution remains one Client artifact, not runtime directory scanning or independent tape packages.
-- The deck retains one real audition surface, global power, a static original Dots SVG cover and explicit use. The audition passes `displayOpacity: 1`; the application background uses the fixed saved preset.
-- Retired effects do not run. Old values are inert Config compatibility data; `ocean_appearance` is removed.
-
-## Current-round checks
-
-### Deck / bilingual metadata
-
-- `node --check deck-panel.js`: passed.
-- Imported `DECK_DICTS` / `createDeckPage`: exported factory exists; **26 English and Chinese deck keys match**, and each directly referenced deck key is present in both dictionaries.
-- Parsed both locale metadata files: `title` / `description` key parity passed; both descriptions identify only Dots.
-- Static assertions: one `Surface` creation, explicit `displayOpacity: 1`, no tuning/range/color controls and no retired artwork branches or four-tape copy.
-- `git diff --check`: passed at the end of this UI/documentation pass.
-
-These are source and language checks, not evidence of actual browser rendering.
-
-### Build, automated tests and resources
-
-- `node build.js`, `node --check client.js`, `node --check index.js`: passed.
-- `node --test *.test.js tapes/*.test.js`: **49/49 passed**. These include 16 Dots geometry/palette/idle/reduced-motion checks, 6 generic resource/size lifecycle checks, 5 fixed-cassette/configuration checks, and 22 retained legacy regressions. Legacy tests do not mean legacy renderers are active.
-- Explicit manifest resources exist; English/Chinese deck key parity passed. The generated artifact contains the v081 fixed-Dots adapter and no ocean renderer, WaterField class, ripple/contour draw routines or retired ocean tool.
-- Settings source contains one Surface and no range/color/tuning controls. Appearance is authored in the local tape defaults, not read from old customized parameters.
-
-### Real DSH installation and inspection
-
-- The linked bundle inventory reports version **0.8.1** from the independent project directory. Disabled/re-enabled through `plugin_manager`; both operations returned `application: applied`, `warnings: []`.
-- Live Config inspection confirms the new defaults. Legacy numeric fields remain for inert compatibility only; the plugin opts out of auto-generated parameter forms.
-- Live Client registration **`local-background-tapes-adapter-v081-dots-fixed` is active**.
-- Real `background_tapes list` returns only Dots, `source: tapes/dots.js`, `fixed: true`; get/insert report the authored preset. Insertion and a same-value enable operation were accepted without changing global power (enabled true).
-- The running tool exposes only `list/get/insert/enable`; parameter update/reset and the retired ocean tool were removed from registration.
-- Current-process cached Client path was synchronized with the built artifact before reactivation; no profile composition was edited by hand.
-
-## Historical context — 0.8.0, not this round
-
-The previous four-tape implementation recorded **46 tests passed** and an applied installation of 0.8.0. Its tests covered ocean numerics, appearance saving, cassette memory and atomic writes, effect mathematics and resource handling. Those results apply to that old source state only; they do not prove that the Dots-only fixed-preset rewrite builds, passes its tests or is installed.
-
-The old review also found and fixed whole-drawer replacement, accidental power overwrite, failure-marker recovery, preview event isolation and disposal-time pending writes. These are useful regression concerns, not newly executed 0.8.1 checks. The old ocean migration/default behavior and four-effect tool exercises are no longer current product behavior.
+- Linked bundle inventory: **0.8.2**, source `link:/Users/zhuoru/fiture/dsh-ocean-surface`.
+- The built Client artifact was synchronized to the known current-process cached Client path. Reactivation through the plugin manager returned `application: applied`, `warnings: []` for disable and enable.
+- Live Client slot **`local-background-tapes-adapter-v082-dots-ocean` is active**.
+- Real `background_tapes list` returns both `dot-field` / `tapes/dots.js` and `ocean-surface` / `tapes/ocean.js`, each fixed.
+- Real `background_tapes get` after activation remains **Dots, enabled true**, opacity 0.85. No actual tape insertion, global power test, or historical parameter reset was performed; the user's current background was preserved.
+- Shared persistence regression tests cover Ocean selection, preservation of Dots values and independent global power, and selected-tape-only nested operations.
 
 ## Verification limitations
 
-No browser-control tool is available in this pass. We have not visually verified current GUI layout at narrow widths, light/dark contrast, SVG appearance, the rendered dot density/gradient/glow, pointer-lens experience, keyboard focus or browser resource recovery. Active slots, syntax checks and unit tests do not establish these results. No substitute web server, mock React/DOM/Canvas renderer, personal browser inspection, authentication bypass or screenshot dependency is used as visual evidence.
+No browser-control tool is available. Live Ocean WebGL execution, actual preview/card layout, light/dark rendering, pointer feel, keyboard behavior, context recovery and metadata/icon display still require real-page confirmation. Active slot registration, unit tests and copied shader equality do not establish these visual/runtime outcomes.
 
-The background-layout adapter is version-specific to DSH `0.2.1-rc.5`, not an officially stable background extension point. The settings section and configuration APIs are public extension points.
+One delegated worker executed a temporary inline mock-hook check before being instructed to stop; it produced no file and is excluded from all verification claims. No mock-page result is treated as live React/browser evidence. No screenshot script, replacement server, browser-profile/authentication access or rasterizer was used.
+
+Background placement remains a user-authorized, version-specific DSH `0.2.1-rc.5` layout adapter, not an official stable background API. The Settings section and Settings persistence are public extension points.

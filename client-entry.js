@@ -6,7 +6,7 @@ import { createDeckPage, DECK_DICTS } from './deck-panel.js';
 
 // The only DSH-specific compatibility seam. Effects never receive these selectors.
 const FRAME='.PIRFFq_frame';
-const SCOPE='.PIRFFq_frame:has(> [data-local-ocean-background="081"])';
+const SCOPE='.PIRFFq_frame:has(> [data-local-ocean-background="082"])';
 const backgroundCSS=`
 ${SCOPE}{isolation:isolate;background:var(--dsw-alias-bg-base)!important}
 ${SCOPE}>.PIRFFq_sidebarCol,${SCOPE}>.PIRFFq_centerCol,${SCOPE}>.PIRFFq_rightbarCol,${SCOPE}>.PIRFFq_bottomRow{position:relative;z-index:1}
@@ -42,13 +42,13 @@ window.__ModuleLoader__.load({
           setTarget(candidate);
         },[]);
         return h(React.Fragment,null,
-          h('span',{hidden:true,ref:marker,'data-ocean-adapter':'0.8.1'}),
-          target?createPortal(h('div',{'data-local-ocean-background':settings.enabled&&!failed?'081':undefined,
+          h('span',{hidden:true,ref:marker,'data-ocean-adapter':'0.8.2'}),
+          target?createPortal(h('div',{'data-local-ocean-background':settings.enabled&&!failed?'082':undefined,
             'aria-hidden':true,style:{position:'absolute',inset:0,zIndex:0,pointerEvents:'none',overflow:'hidden'}},
             h('style',null,backgroundCSS),
             h(Surface,{key:cassette,cassette,params:getCassetteParams(settings),enabled:settings.enabled,preview:false,onError:()=>setFailed(true),onReady:()=>setFailed(false)})),target):null);
       }
-      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v081-dots-local',order:-100},Background));
+      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v082-dots-ocean',order:-100},Background));
     }};
   },
 });

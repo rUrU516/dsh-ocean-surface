@@ -1,13 +1,13 @@
 {
   "name": "@local/dsh-cursor-ripples",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "private": true,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/rUrU516/dsh-ocean-surface.git"
   },
   "homepage": "https://github.com/rUrU516/dsh-ocean-surface#readme",
-  "description": "Background Tapes: a fixed Dots cassette with a violet gradient, a soft glowing pointer lens, and no settings-panel parameter controls.",
+  "description": "Background Tapes: fixed Dots and original Ocean Surface cassettes, with interactive audition and no parameter controls.",
   "scripts": {
     "build": "node build.js",
     "test": "node --test *.test.js tapes/*.test.js"
@@ -34,6 +34,8 @@
     "cassette-registry.js",
     "tapes/dots.js",
     "tapes/dots.test.js",
+    "tapes/ocean.js",
+    "tapes/ocean.test.js",
     "cassette-catalog.js",
     "cassette-operations.js",
     "cassette-catalog.test.js",
