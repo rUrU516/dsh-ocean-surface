@@ -28,7 +28,7 @@ const DOTS_CASSETTE = Object.freeze({
   name: Object.freeze({ zh: 'Dots', en: 'Dots' }),
   subtitle: Object.freeze({ zh: '静谧点阵，柔光透镜', en: 'Quiet dots, a soft-focus lens' }),
   mood: Object.freeze({ zh: '蓝紫与藕粉之间的一点微光', en: 'A quiet shimmer between violet and rose' }),
-  colors: Object.freeze(['#6656c7', '#af7ba9']),
+  colors: Object.freeze(['#703ae6', '#bc4eda']),
   renderer: '2d', continuous: false,
   defaults: Object.freeze({ tint: '#9071c1', opacity: .38, strength: 1, scale: 1, speed: .45 }),
   // The tape is a fixed art preset, not a settings panel.
@@ -38,8 +38,8 @@ const DOTS_CASSETTE = Object.freeze({
 const dotsTau = Math.PI * 2;
 const dotsLensRadius = 160;
 const dotsDefaultRgb = [144, 113, 193];
-const dotsCoolRgb = [102, 86, 199];
-const dotsWarmRgb = [175, 123, 169];
+const dotsCoolRgb = [112, 58, 230];
+const dotsWarmRgb = [188, 78, 218];
 const dotsClamp = (value, low, high) => Math.max(low, Math.min(high, value));
 const dotsFinite = (value, fallback = 0) => Number.isFinite(value) ? value : fallback;
 const dotsMix = (from, to, amount) => from.map((value, index) => value + (to[index] - value) * amount);
@@ -62,8 +62,9 @@ function dotsPalette(params, dark) {
   const color = endpoint => endpoint.map((value, index) =>
     dotsClamp((value + tint[index] - dotsDefaultRgb[index]) * (dark ? 1 : .72), 0, 255));
   return { cool: color(dotsCoolRgb), warm: color(dotsWarmRgb),
-    core: dark ? dotsMix(tint, [246, 241, 255], .85) : dotsMix(tint, [67, 36, 108], .72),
-    halo: dotsMix(tint, dark ? [167, 132, 231] : [100, 61, 151], .45) };
+    // Keep chroma in the bright center; near-white cores washed out the violet.
+    core: dark ? dotsMix(tint, [210, 153, 255], .72) : dotsMix(tint, [67, 36, 108], .72),
+    halo: dotsMix(tint, dark ? [157, 70, 255] : [100, 61, 151], dark ? .7 : .45) };
 }
 
 function dotsSampleNormalized(x, y, width, height, cursor, params, dark, palette) {
@@ -92,8 +93,8 @@ function dotsSampleNormalized(x, y, width, height, cursor, params, dark, palette
     coreRgb: palette.core, haloRgb: palette.halo,
     // Only two local, soft translucent layers; never shadowBlur per grid point.
     halos: [
-      { radius: radius + 8 * focus, alpha: .12 * focus * focus },
-      { radius: radius + 3.5 * focus, alpha: .23 * focus * focus },
+      { radius: radius + 8 * focus, alpha: .16 * focus * focus },
+      { radius: radius + 3.5 * focus, alpha: .28 * focus * focus },
     ],
   };
 }
@@ -789,7 +790,7 @@ window.__ModuleLoader__.load({
             h('style',null,backgroundCSS),
             h(Surface,{key:cassette,cassette,params:getCassetteParams(settings),enabled:settings.enabled,preview:false,onError:()=>setFailed(true),onReady:()=>setFailed(false)})),target):null);
       }
-      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v081-dots-fixed',order:-100},Background));
+      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v081-dots-violet',order:-100},Background));
     }};
   },
 });

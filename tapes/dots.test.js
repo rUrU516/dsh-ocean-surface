@@ -26,7 +26,7 @@ dotsTest('the complete tape is Host-importable, immutable, localized and a fixed
   dotsAssert.equal(DOTS_CASSETTE.number, '01');
   dotsAssert.equal(DOTS_CASSETTE.source, 'tapes/dots.js');
   dotsAssert.deepEqual(DOTS_CASSETTE.name, { zh: 'Dots', en: 'Dots' });
-  dotsAssert.deepEqual(DOTS_CASSETTE.colors, ['#6656c7', '#af7ba9']);
+  dotsAssert.deepEqual(DOTS_CASSETTE.colors, ['#703ae6', '#bc4eda']);
   dotsAssert.equal(DOTS_CASSETTE.renderer, '2d');
   dotsAssert.equal(DOTS_CASSETTE.continuous, false);
   dotsAssert.deepEqual(DOTS_CASSETTE.controls, []);
@@ -60,8 +60,8 @@ dotsTest('quiet base dots are .9px on an 18 CSSpx grid, independent of backing s
 dotsTest('default spatial palette is a smooth blue-violet→rose-violet gradient, never parity-based', () => {
   const first = dotsSample(0, 0, dotsSize);
   const last = dotsSample(522, 550, dotsSize);
-  dotsAssert.deepEqual(first.baseRgb, [102, 86, 199]);
-  dotsAssert.deepEqual(last.baseRgb, [175, 123, 169]);
+  dotsAssert.deepEqual(first.baseRgb, [112, 58, 230]);
+  dotsAssert.deepEqual(last.baseRgb, [188, 78, 218]);
   const row = [0, 18, 36, 54].map(x => dotsSample(x, 90, dotsSize));
   const column = [0, 18, 36, 54].map(y => dotsSample(90, y, dotsSize));
   for (const samples of [row, column]) {
@@ -86,7 +86,9 @@ dotsTest('160px compact lens enlarges the center to ~28px gaps and 2.5px luminou
   dotsClose(neighbor.x - center.x, 28, .4);
   dotsAssert.ok(center.halos[0].radius > center.halos[1].radius);
   dotsAssert.ok(center.halos.every(halo => halo.alpha > 0));
-  dotsAssert.ok(center.coreRgb.every(channel => channel > 220), 'dark core is pale lavender');
+  dotsAssert.ok(center.coreRgb[2] - center.coreRgb[1] > 70, 'bright core remains violet rather than gray-white');
+  dotsAssert.ok(center.coreRgb[0] > center.coreRgb[1] + 30);
+  dotsAssert.ok(center.haloRgb[2] - center.haloRgb[1] > 140, 'soft halo preserves saturated violet');
   const light = dotsAt(0, { dark: false });
   dotsAssert.ok(light.coreRgb.every(channel => channel < 150), 'light theme uses a deep violet, not white');
 });
