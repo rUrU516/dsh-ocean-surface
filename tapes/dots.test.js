@@ -45,15 +45,15 @@ dotsTest('normalization clamps all original bounds and does not coerce invalid i
   dotsAssert.deepEqual(normalizeDotsParams({ tint: 'red', opacity: NaN, strength: Infinity, scale: '1', speed: null }), dotsParams);
 });
 
-dotsTest('quiet base dots are 1.2px on an 18 CSSpx grid, independent of backing size', () => {
+dotsTest('resting grid is invisible while retaining 1.2px geometry and 18 CSSpx spacing', () => {
   const sample = dotsSample(9, 9, dotsSize);
   dotsClose(sample.radius, 1.2);
   dotsClose(sample.spacing, 18);
-  dotsClose(sample.alpha, .5);
+  dotsClose(sample.alpha, 0);
   dotsClose(sample.dilation, 1);
   dotsAssert.equal(sample.coreAlpha, 0);
   dotsAssert.ok(sample.halos.every(halo => halo.alpha === 0));
-  dotsClose(dotsSample(9, 9, { ...dotsSize, dark: false }).alpha, .42);
+  dotsClose(dotsSample(9, 9, { ...dotsSize, dark: false }).alpha, 0);
   dotsClose(dotsSample(9, 9, { ...dotsSize, params: { scale: 1.5 } }).spacing, 27);
 });
 
@@ -104,7 +104,7 @@ dotsTest('radius, glow, brightness and displacement fade continuously to a quiet
   const edge = dotsAt(160);
   dotsClose(edge.x, dotsCenter.x + 160);
   dotsClose(edge.radius, 1.2);
-  dotsClose(edge.alpha, .5);
+  dotsClose(edge.alpha, 0);
   dotsClose(edge.halos[0].alpha, 0);
   const inner = dotsAt(159.99);
   dotsAssert.ok(Math.abs(inner.x - (dotsCenter.x + 159.99)) < 1e-8);
@@ -133,7 +133,7 @@ dotsTest('bounded radial map never folds even at maximum strength and at every s
 dotsTest('strength zero removes lens, glow, enlargement and all additional scheduling', () => {
   const sample = dotsAt(0, { params: { strength: 0 } });
   dotsClose(sample.radius, 1.2);
-  dotsClose(sample.alpha, .5);
+  dotsClose(sample.alpha, 0);
   dotsClose(sample.dilation, 1);
   dotsAssert.equal(sample.coreAlpha, 0);
   dotsAssert.ok(sample.halos.every(halo => halo.alpha === 0));
@@ -143,6 +143,18 @@ dotsTest('strength zero removes lens, glow, enlargement and all additional sched
   dotsAssert.equal(dotsAdvanceInteraction(state, .05, normalizeDotsParams({ strength: 0 })), false);
   dotsAssert.equal(state.cursor.amount, 0);
   dotsAssert.equal(state.pointer, null);
+});
+
+dotsTest('only the pointer lens is visible, smoothly fading at its edge and on exit', () => {
+  for (const dark of [true, false]) {
+    dotsAssert.equal(dotsAt(160, { dark }).alpha, 0);
+    dotsAssert.equal(dotsAt(400, { dark }).alpha, 0);
+    dotsAssert.equal(dotsAt(0, { dark, cursor: { ...dotsCursor, amount: 0 } }).alpha, 0);
+    dotsAssert.ok(dotsAt(0, { dark }).alpha > dotsAt(80, { dark }).alpha);
+    dotsAssert.ok(dotsAt(80, { dark }).alpha > dotsAt(150, { dark }).alpha);
+    dotsAssert.ok(dotsAt(159.99, { dark }).alpha < 1e-7);
+    dotsAssert.ok(dotsAt(0, { dark, cursor: { ...dotsCursor, amount: .5 } }).alpha < dotsAt(0, { dark }).alpha);
+  }
 });
 
 dotsTest('one broad glow pool fades with the pointer, without ambient animation', () => {

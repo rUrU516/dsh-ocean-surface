@@ -84,13 +84,15 @@ function dotsSampleNormalized(x, y, width, height, cursor, params, dark, palette
   // Lift resting dots without enlarging the already approved 2.5px lens center.
   const radius = 1.2 * params.scale + 1.3 * params.scale * influence;
   const baseAlpha = dark ? .5 : .42;
+  // No resting grid: reveal only the lens, with a smooth edge and exit fade.
+  const visibility = Math.min(1, amount) * (q < 1 ? (1 - q * q) ** 2 : 0);
   return {
     x: x + dx * (dilation - 1), y: y + dy * (dilation - 1),
     radius, baseRadius: 1.2 * params.scale, spacing: 18 * params.scale,
     dilation, influence, blend, baseRgb,
     rgb: dotsMix(baseRgb, palette.core, focus),
-    alpha: baseAlpha + (.95 - baseAlpha) * focus,
-    coreAlpha: (.95 - baseAlpha) / (1 - baseAlpha) * focus,
+    visibility, alpha: (baseAlpha + (.95 - baseAlpha) * focus) * visibility,
+    coreAlpha: (.95 - baseAlpha) / (1 - baseAlpha * visibility) * focus,
     coreRgb: palette.core, haloRgb: palette.halo,
     // Only two local, soft translucent layers; never shadowBlur per grid point.
     halos: [
@@ -194,21 +196,15 @@ function dotsDraw(context, width, height, state, params, dark) {
     context.globalAlpha = pool.alpha;
     context.fillRect(px - pool.radius, py - pool.radius, pool.radius * 2, pool.radius * 2);
   }
-  context.beginPath();
   for (let y = gap / 2; y < height; y += gap) {
     for (let x = gap / 2; x < width; x += gap) {
       const dx = x - state.cursor.x * width;
       const dy = y - state.cursor.y * height;
       if (state.cursor.amount > 0 && params.strength > 0 && dx * dx + dy * dy < dotsLensRadius * dotsLensRadius) {
         local.push(dotsSampleNormalized(x, y, width, height, state.cursor, params, dark, palette));
-      } else {
-        dotsCircle(context, x, y, 1.2 * params.scale);
       }
     }
   }
-  context.fillStyle = gradient;
-  context.globalAlpha = dark ? .5 : .42;
-  context.fill();
   // Halos go behind every core, in two local-only passes. No opaque background.
   const haloRgb = palette.halo.map(value => Math.round(value)).join(',');
   for (let layer = 0; layer < 2; layer++) {
@@ -228,13 +224,15 @@ function dotsDraw(context, width, height, state, params, dark) {
     }
   }
   context.fillStyle = gradient;
-  context.globalAlpha = dark ? .5 : .42;
-  context.beginPath();
-  for (const sample of local) dotsCircle(context, sample.x, sample.y, sample.radius);
-  context.fill();
+  for (const sample of local) {
+    context.globalAlpha = (dark ? .5 : .42) * sample.visibility;
+    context.beginPath();
+    dotsCircle(context, sample.x, sample.y, sample.radius);
+    context.fill();
+  }
   context.fillStyle = dotsCssRgb(palette.core);
   for (const sample of local) {
-    context.globalAlpha = sample.coreAlpha;
+    context.globalAlpha = sample.coreAlpha * sample.visibility;
     context.beginPath();
     dotsCircle(context, sample.x, sample.y, sample.radius);
     context.fill();
@@ -811,7 +809,7 @@ window.__ModuleLoader__.load({
             h('style',null,backgroundCSS),
             h(Surface,{key:cassette,cassette,params:getCassetteParams(settings),enabled:settings.enabled,preview:false,onError:()=>setFailed(true),onReady:()=>setFailed(false)})),target):null);
       }
-      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v081-dots-bloom',order:-100},Background));
+      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v081-dots-local',order:-100},Background));
     }};
   },
 });

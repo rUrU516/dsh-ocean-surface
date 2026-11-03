@@ -2,7 +2,11 @@
 
 Date: 2026-11-03 (Asia/Shanghai). Branch: `feat/cassette-deck`. This work does not change `main` or a formal Release.
 
-## Visibility / clarity follow-up
+## Latest: local-only reveal
+
+The user found the resting grid visually busy. Resting dots are now not drawn at all. Only dots inside the existing 160 CSSpx lens are revealed, using a smooth `(1-q²)²` visibility envelope multiplied by pointer presence. The central brightness, geometry and glow remain unchanged; pointer leave fades dots and the broad glow to zero. Pure regressions verify no distant/resting dots, a continuous edge, and exit fade. **51 tests pass** and the live Client slot `local-background-tapes-adapter-v081-dots-local` is active. Final visual acceptance remains user-confirmed, not an automated screenshot claim.
+
+## Visibility / clarity follow-up (earlier)
 
 The user supplied an actual chat screenshot showing dim and blurred dots. The previous surface multiplied canvas opacity 0.38 by base-dot alpha 0.5 (effective alpha 0.19), and the 1100px backing cap resampled fine dots on larger windows. The fixed tape now uses opacity **0.85** without changing dot spacing or lens geometry. Canvas budgets are **DPR ≤2, long edge ≤3200, area ≤6 million pixels**, preview long edge ≤1600. Existing idle/pause behavior remains. Final live registration `local-background-tapes-adapter-v081-dots-clear` is active; Host get reports opacity 0.85. All 49 tests pass after the change. No automated live screenshot was available, so actual final appearance still requires user confirmation.
 
