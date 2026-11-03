@@ -2,6 +2,10 @@
 
 Date: 2026-11-03 (Asia/Shanghai). Branch `feat/cassette-deck`; `main` and formal Release unchanged.
 
+## Composer-side scrim follow-up
+
+The user's real Ocean screenshot showed the full-width black strip beside the opaque composer. Installed DSH `ui-conversation` source identifies `.kiGsTW_composerSeat` as a sticky, full-column vertical gradient reaching `bg-base` at 36px. The adapter now restricts only that background image's paint to `min(100%, var(--dsh-composer-card-max-width))`, centered and non-repeating. It retains the native gradient, opaque card, sticky/z-index, hit areas and all dimensions. No input geometry or global theme token changes. Build, syntax, 70 tests and static paint-only assertions passed; live slot `local-background-tapes-adapter-v082-composer-sides` is active. Before/after tool reads preserve Ocean enabled true and identical fixed settings. Actual side visibility and scroll overlap still require the user screenshot check.
+
 ## Delivered scope
 
 - Preserve the latest Dots behavior: only pointer-local dots and glow, no resting grid.

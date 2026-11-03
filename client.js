@@ -1263,7 +1263,10 @@ ${SCOPE}{isolation:isolate;background:var(--dsw-alias-bg-base)!important}
 ${SCOPE}>.PIRFFq_sidebarCol,${SCOPE}>.PIRFFq_centerCol,${SCOPE}>.PIRFFq_rightbarCol,${SCOPE}>.PIRFFq_bottomRow{position:relative;z-index:1}
 ${SCOPE}>.PIRFFq_centerCol,${SCOPE}>.PIRFFq_centerCol .kiGsTW_root,${SCOPE} .kiGsTW_body,${SCOPE} .kiGsTW_scrollBody,${SCOPE} .kiGsTW_header,${SCOPE} .tnXGgG_column[data-chat-flow]{background:transparent!important;box-shadow:none!important}
 ${SCOPE}>.PIRFFq_sidebarCol,${SCOPE}>.PIRFFq_bottomRow{background:color-mix(in srgb,var(--dsw-alias-bg-base) 15%,transparent)!important}
-/* The writing surface always wins over decorative content. Do not touch native scrims/geometry. */
+/* Keep the native vertical scrim, but confine its paint to the centered card.
+   Background sizing does not change sticky positioning, hit areas or chat geometry. */
+${SCOPE} [data-composer-seat].kiGsTW_composerSeat{background-size:min(100%,var(--dsh-composer-card-max-width)) 100%!important;background-position:center top!important;background-repeat:no-repeat!important}
+/* The writing surface always stays opaque over decorative content and chat. */
 ${SCOPE} [data-composer-card]{background:var(--dsw-alias-bg-layer-1)!important}
 ${SCOPE} .kiGsTW_viewArea:not(:has([data-chat-flow])),${SCOPE}>.PIRFFq_rightbarCol{background:var(--dsw-alias-bg-base)}
 ${SCOPE}>[data-shell-overlay],${SCOPE}>[data-shell-leading]{z-index:50}
@@ -1299,7 +1302,7 @@ window.__ModuleLoader__.load({
             h('style',null,backgroundCSS),
             h(Surface,{key:cassette,cassette,params:getCassetteParams(settings),enabled:settings.enabled,preview:false,onError:()=>setFailed(true),onReady:()=>setFailed(false)})),target):null);
       }
-      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v082-dots-ocean',order:-100},Background));
+      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v082-composer-sides',order:-100},Background));
     }};
   },
 });
