@@ -21,60 +21,277 @@ function tintRGB(tint) {
   return [1, 3, 5].map((offset) => parseInt(tint.slice(offset, offset + 2), 16) / 255);
 }
 
+// Original Canvas2D artwork. This entire cassette is safe to import on the Host.
+// All geometry is in CSS pixels; the caller owns the canvas, transform and clearing.
+const DOTS_CASSETTE = Object.freeze({
+  id: 'dot-field', number: '01', source: 'tapes/dots.js',
+  name: Object.freeze({ zh: 'Dots', en: 'Dots' }),
+  subtitle: Object.freeze({ zh: '静谧点阵，柔光透镜', en: 'Quiet dots, a soft-focus lens' }),
+  mood: Object.freeze({ zh: '蓝紫与藕粉之间的一点微光', en: 'A quiet shimmer between violet and rose' }),
+  colors: Object.freeze(['#6656c7', '#af7ba9']),
+  renderer: '2d', continuous: false,
+  defaults: Object.freeze({ tint: '#9071c1', opacity: .38, strength: 1, scale: 1, speed: .45 }),
+  // The tape is a fixed art preset, not a settings panel.
+  controls: Object.freeze([]),
+});
 
-/** Deck API v1. Descriptors are data only; renderers never receive DSH or a DOM root. */
-const CASSETTE_API_VERSION = 1;
-const CASSETTES = Object.freeze([
-  { id:'dot-field', number:'01', name:{zh:'引力点阵',en:'Dot Field'}, subtitle:{zh:'在指尖，轻轻弯曲的空间。',en:'A little gravity, at your fingertips.'},
-    mood:{zh:'透镜 · 安静',en:'LENS / QUIET'}, colors:['#7284df','#af83ba'], renderer:'2d', continuous:false,
-    defaults:{tint:'#8b91d4',opacity:.38,strength:.65,scale:1,speed:.45},
-    controls:[['opacity',0,.65,.01],['strength',0,1.5,.05],['scale',.6,1.8,.05]] },
-  { id:'ripple', number:'02', name:{zh:'空间薄膜',en:'Space Membrane'}, subtitle:{zh:'轻触一下，余韵慢慢散开。',en:'Touch the stillness. Watch it settle.'},
-    mood:{zh:'涟漪 · 触发',en:'RIPPLE / ON TOUCH'}, colors:['#7ca8ad','#9b9bbd'], renderer:'2d', continuous:false,
-    defaults:{tint:'#85a7b1',opacity:.28,strength:.6,scale:1,speed:.65},
-    controls:[['opacity',0,.65,.01],['strength',0,1.5,.05],['speed',.2,1.5,.05]] },
-  { id:'contour', number:'03', name:{zh:'风的等高线',en:'Quiet Contours'}, subtitle:{zh:'几缕细线，慢于呼吸。',en:'A few fine lines. Slower than a breath.'},
-    mood:{zh:'线条 · 缓流',en:'LINES / SLOW DRIFT'}, colors:['#b7a486','#89a5a0'], renderer:'2d', continuous:true,
-    defaults:{tint:'#a7a18a',opacity:.2,strength:.45,scale:1,speed:.3},
-    controls:[['opacity',0,.65,.01],['strength',0,1.5,.05],['speed',0,1.5,.05]] },
-  { id:'ocean', number:'04', name:{zh:'深海来信',en:'Ocean Surface'}, subtitle:{zh:'熟悉的水面，收进一盘磁带。',en:'The original ocean, kept on tape.'},
-    mood:{zh:'海面 · 连续',en:'WATER / CONTINUOUS'}, colors:['#4896a6','#577d98'], renderer:'webgl', continuous:true,
-    defaults:APPEARANCE_DEFAULTS,
-    controls:[['brightness',.5,2,.01],['opacity',0,.5,.01],['waveStrength',0,2,.05],['speed',0,2,.05],['damping',0,1,.01]] },
+const dotsTau = Math.PI * 2;
+const dotsLensRadius = 160;
+const dotsDefaultRgb = [144, 113, 193];
+const dotsCoolRgb = [102, 86, 199];
+const dotsWarmRgb = [175, 123, 169];
+const dotsClamp = (value, low, high) => Math.max(low, Math.min(high, value));
+const dotsFinite = (value, fallback = 0) => Number.isFinite(value) ? value : fallback;
+const dotsMix = (from, to, amount) => from.map((value, index) => value + (to[index] - value) * amount);
+const dotsCssRgb = rgb => `rgb(${rgb.map(value => Math.round(value)).join(',')})`;
+
+function normalizeDotsParams(input = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  const defaults = DOTS_CASSETTE.defaults;
+  const bounded = (key, low, high) => dotsClamp(dotsFinite(source[key], defaults[key]), low, high);
+  return {
+    tint: typeof source.tint === 'string' && /^#[0-9a-f]{6}$/i.test(source.tint) ? source.tint.toLowerCase() : defaults.tint,
+    opacity: bounded('opacity', 0, .65), strength: bounded('strength', 0, 1.5),
+    scale: bounded('scale', .6, 1.8), speed: bounded('speed', 0, 1.5),
+  };
+}
+
+function dotsPalette(params, dark) {
+  const tint = [1, 3, 5].map(offset => parseInt(params.tint.slice(offset, offset + 2), 16));
+  // Tint shifts the entire palette, never replaces its continuous cool→warm change.
+  const color = endpoint => endpoint.map((value, index) =>
+    dotsClamp((value + tint[index] - dotsDefaultRgb[index]) * (dark ? 1 : .72), 0, 255));
+  return { cool: color(dotsCoolRgb), warm: color(dotsWarmRgb),
+    core: dark ? dotsMix(tint, [246, 241, 255], .85) : dotsMix(tint, [67, 36, 108], .72),
+    halo: dotsMix(tint, dark ? [167, 132, 231] : [100, 61, 151], .45) };
+}
+
+function dotsSampleNormalized(x, y, width, height, cursor, params, dark, palette) {
+  const blend = dotsClamp(.55 * (width > 0 ? x / width : 0) + .45 * (height > 0 ? y / height : 0), 0, 1);
+  const baseRgb = dotsMix(palette.cool, palette.warm, blend);
+  const amount = dotsClamp(dotsFinite(cursor?.amount), 0, 1) * params.strength;
+  const dx = x - dotsClamp(dotsFinite(cursor?.x), 0, 1) * width;
+  const dy = y - dotsClamp(dotsFinite(cursor?.y), 0, 1) * height;
+  const q = Math.hypot(dx, dy) / dotsLensRadius;
+  // Compact C2 boundary: displacement, brightness, size and halos all reach zero
+  // smoothly at 160px. For r'=r(1+A(1-q²)^3), min dr'/dr=1-32A/49.
+  // A≤5/6 (strength≤1.5), so dr'/dr≥.455: no radial fold even at maximum strength.
+  const falloff = q < 1 ? (1 - q * q) ** 3 : 0;
+  const influence = amount * falloff;
+  const focus = dotsClamp(influence, 0, 1);
+  const dilation = 1 + (5 / 9) * influence;
+  const radius = .9 * params.scale + 1.6 * params.scale * influence;
+  const baseAlpha = dark ? .5 : .42;
+  return {
+    x: x + dx * (dilation - 1), y: y + dy * (dilation - 1),
+    radius, baseRadius: .9 * params.scale, spacing: 18 * params.scale,
+    dilation, influence, blend, baseRgb,
+    rgb: dotsMix(baseRgb, palette.core, focus),
+    alpha: baseAlpha + (.95 - baseAlpha) * focus,
+    coreAlpha: (.95 - baseAlpha) / (1 - baseAlpha) * focus,
+    coreRgb: palette.core, haloRgb: palette.halo,
+    // Only two local, soft translucent layers; never shadowBlur per grid point.
+    halos: [
+      { radius: radius + 8 * focus, alpha: .12 * focus * focus },
+      { radius: radius + 3.5 * focus, alpha: .23 * focus * focus },
+    ],
+  };
+}
+
+/**
+ * Pure reference sample. x/y are undeformed CSS coordinates; cursor x/y are
+ * normalized [0,1], amount is [0,1]. Opacity is deliberately NOT baked into alpha:
+ * the outer surface applies global opacity, and previews can use opacity=1.
+ */
+function dotsSample(x, y, { width = 0, height = 0, cursor = null, params, dark = false } = {}) {
+  const settings = normalizeDotsParams(params);
+  return dotsSampleNormalized(dotsFinite(x), dotsFinite(y), Math.max(0, dotsFinite(width)),
+    Math.max(0, dotsFinite(height)), cursor, settings, dark, dotsPalette(settings, dark));
+}
+
+/** CPU-only interaction state, exported for real scheduling tests without Canvas/DOM mocks. */
+function dotsCreateInteraction() {
+  return { pointer: null, cursor: { x: 0, y: 0, amount: 0 } };
+}
+
+function dotsClearInteraction(state) {
+  state.pointer = null;
+  state.cursor.amount = 0;
+}
+
+function dotsPointer(state, point, params, reducedMotion = false) {
+  if (reducedMotion || params.strength <= 0) { dotsClearInteraction(state); return; }
+  if (point?.type === 'leave') { state.pointer = null; return; }
+  if (!point || !['move', 'down', 'enter'].includes(point.type) || !Number.isFinite(point.x)
+      || !Number.isFinite(point.y) || point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1) return;
+  // First entry and re-entry after a completed exit start AT the pointer, not the
+  // canvas center or the previous visit. Only the lens amount eases into view.
+  if (!state.pointer && state.cursor.amount === 0) {
+    state.cursor.x = point.x;
+    state.cursor.y = point.y;
+  }
+  state.pointer = { x: point.x, y: point.y };
+}
+
+function dotsAdvanceInteraction(state, dt, params, reducedMotion = false) {
+  if (reducedMotion || params.strength <= 0) { dotsClearInteraction(state); return false; }
+  const target = state.pointer;
+  const targetAmount = target ? 1 : 0;
+  // Speed controls response only; there is no ambient animation, even at speed>0.
+  const ease = 1 - Math.exp(-Math.min(.1, Math.max(0, dotsFinite(dt))) * (10 + 4 * params.speed));
+  state.cursor.amount += (targetAmount - state.cursor.amount) * ease;
+  if (target) {
+    state.cursor.x += (target.x - state.cursor.x) * ease;
+    state.cursor.y += (target.y - state.cursor.y) * ease;
+  }
+  const settled = Math.abs(state.cursor.amount - targetAmount) < .0005 && (!target
+    || Math.hypot(state.cursor.x - target.x, state.cursor.y - target.y) < .00001);
+  if (settled) {
+    state.cursor.amount = targetAmount;
+    if (target) { state.cursor.x = target.x; state.cursor.y = target.y; }
+  }
+  return !settled;
+}
+
+function dotsCircle(context, x, y, radius) {
+  context.moveTo(x + radius, y);
+  context.arc(x, y, radius, 0, dotsTau);
+}
+
+function dotsDraw(context, width, height, state, params, dark) {
+  if (!context || width <= 0 || height <= 0) return;
+  const palette = dotsPalette(params, dark);
+  const gap = 18 * params.scale;
+  const local = [];
+  // Using a real linear gradient preserves spatial color variation across every
+  // row/column (no alternating colors, parity groups, randomness or checkerboard).
+  const gx = .55 / width;
+  const gy = .45 / height;
+  const gradientLengthSquared = gx * gx + gy * gy;
+  const gradient = context.createLinearGradient(0, 0, gx / gradientLengthSquared, gy / gradientLengthSquared);
+  gradient.addColorStop(0, dotsCssRgb(palette.cool));
+  gradient.addColorStop(1, dotsCssRgb(palette.warm));
+  // Grid phase is fixed in CSS pixels. A resize reveals more grid, never scales it.
+  context.save();
+  context.beginPath();
+  for (let y = gap / 2; y < height; y += gap) {
+    for (let x = gap / 2; x < width; x += gap) {
+      const dx = x - state.cursor.x * width;
+      const dy = y - state.cursor.y * height;
+      if (state.cursor.amount > 0 && params.strength > 0 && dx * dx + dy * dy < dotsLensRadius * dotsLensRadius) {
+        local.push(dotsSampleNormalized(x, y, width, height, state.cursor, params, dark, palette));
+      } else {
+        dotsCircle(context, x, y, .9 * params.scale);
+      }
+    }
+  }
+  context.fillStyle = gradient;
+  context.globalAlpha = dark ? .5 : .42;
+  context.fill();
+  // Halos go behind every core, in two local-only passes. No opaque background.
+  const haloRgb = palette.halo.map(value => Math.round(value)).join(',');
+  for (let layer = 0; layer < 2; layer++) {
+    for (const sample of local) {
+      const halo = sample.halos[layer];
+      if (halo.alpha < .00001) continue;
+      const glow = context.createRadialGradient(sample.x, sample.y, sample.radius * .3,
+        sample.x, sample.y, halo.radius);
+      glow.addColorStop(0, `rgba(${haloRgb},1)`);
+      glow.addColorStop(.4, `rgba(${haloRgb},.45)`);
+      glow.addColorStop(1, `rgba(${haloRgb},0)`);
+      context.fillStyle = glow;
+      context.globalAlpha = halo.alpha;
+      context.beginPath();
+      dotsCircle(context, sample.x, sample.y, halo.radius);
+      context.fill();
+    }
+  }
+  context.fillStyle = gradient;
+  context.globalAlpha = dark ? .5 : .42;
+  context.beginPath();
+  for (const sample of local) dotsCircle(context, sample.x, sample.y, sample.radius);
+  context.fill();
+  context.fillStyle = dotsCssRgb(palette.core);
+  for (const sample of local) {
+    context.globalAlpha = sample.coreAlpha;
+    context.beginPath();
+    dotsCircle(context, sample.x, sample.y, sample.radius);
+    context.fill();
+  }
+  context.restore();
+}
+
+/**
+ * The caller supplies the sole Canvas2D context, CSS size, and normalized pointer.
+ * Before every frame it sets backing→CSS transform and clears the surface. This
+ * effect owns no DOM, canvas sizing, events, RAF, or global opacity. dt/time are
+ * seconds; time is accepted for the common tape contract (no time-driven drift).
+ */
+function createDotsEffect({ context, params, dark = false, reducedMotion = false } = {}) {
+  let settings = normalizeDotsParams(params);
+  let width = 0;
+  let height = 0;
+  let disposed = false;
+  const state = dotsCreateInteraction();
+  return {
+    resize(nextWidth, nextHeight) {
+      if (disposed) return;
+      width = Math.max(0, dotsFinite(nextWidth));
+      height = Math.max(0, dotsFinite(nextHeight));
+    },
+    update(patch = {}) {
+      if (disposed || !patch || typeof patch !== 'object') return;
+      if (patch.params && typeof patch.params === 'object') settings = normalizeDotsParams({ ...settings, ...patch.params });
+      if (typeof patch.dark === 'boolean') dark = patch.dark;
+      if (typeof patch.reducedMotion === 'boolean') reducedMotion = patch.reducedMotion;
+      if (reducedMotion || settings.strength <= 0) dotsClearInteraction(state);
+    },
+    pointer(point) {
+      if (!disposed) dotsPointer(state, point, settings, reducedMotion);
+    },
+    frame(dt, time) {
+      if (disposed || width <= 0 || height <= 0) return false;
+      const needsNext = dotsAdvanceInteraction(state, dt, settings, reducedMotion);
+      dotsDraw(context, width, height, state, settings, dark);
+      return needsNext;
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      dotsClearInteraction(state);
+      context = null;
+    },
+  };
+}
+
+
+/** Explicit built-ins only. Each local tape supplies data, normalization and its factory. */
+const CASSETTE_ENTRIES=Object.freeze([
+  Object.freeze({descriptor:DOTS_CASSETTE,normalize:normalizeDotsParams,create:createDotsEffect}),
 ]);
-function getCassette(id) { return CASSETTES.find(item=>item.id===id) || CASSETTES.find(item=>item.id==='ocean'); }
-function normalizeCassetteParams(id, input = {}) {
-  const descriptor = getCassette(id);
-  if (descriptor.id==='ocean') return normalizeAppearance(input);
-  const result={...descriptor.defaults};
-  if (typeof input.tint==='string' && /^#[\da-f]{6}$/i.test(input.tint)) result.tint=input.tint.toLowerCase();
-  const ranges={opacity:[0,.65],strength:[0,1.5],scale:[.6,1.8],speed:[0,1.5]};
-  for (const [key,[min,max]] of Object.entries(ranges)) if(typeof input[key]==='number' && Number.isFinite(input[key])) result[key]=Math.max(min,Math.min(max,input[key]));
-  return result;
+function getCassetteEntry(id){
+  return CASSETTE_ENTRIES.find(entry=>entry.descriptor.id===id)||CASSETTE_ENTRIES[0];
 }
-const DECK_DEFAULTS=Object.freeze({...APPEARANCE_DEFAULTS,cassette:'ocean',cassetteSettings:{}});
-function normalizeDeckSettings(input={}) {
-  const source=input && typeof input==='object'?input:{};
-  const cassette=CASSETTES.some(item=>item.id===source.cassette)?source.cassette:'ocean';
-  const cassetteSettings={};
-  for(const item of CASSETTES) {
-    if(item.id==='ocean') continue; // Existing ocean fields stay in their original persisted location.
-    const saved=source.cassetteSettings?.[item.id];
-    if(saved && typeof saved==='object') cassetteSettings[item.id]=normalizeCassetteParams(item.id,saved);
-  }
-  return {...normalizeAppearance(source),cassette,cassetteSettings};
+
+
+const CASSETTE_API_VERSION=1;
+const CASSETTES=Object.freeze(CASSETTE_ENTRIES.map(entry=>entry.descriptor));
+function getCassette(id){return getCassetteEntry(id).descriptor;}
+function normalizeCassetteParams(id,input={}){return getCassetteEntry(id).normalize(input);}
+// Legacy ocean values remain inert compatibility data; they are never an active tape.
+const DECK_DEFAULTS=Object.freeze({...APPEARANCE_DEFAULTS,cassette:'dot-field',cassetteSettings:{}});
+function normalizeDeckSettings(input={}){
+  const source=input&&typeof input==='object'?input:{};
+  const saved=source.cassetteSettings?.['dot-field'];
+  return {...normalizeAppearance(source),cassette:'dot-field',cassetteSettings:saved&&typeof saved==='object'?{'dot-field':normalizeCassetteParams('dot-field',saved)}:{}};
 }
-function getCassetteParams(settings,id=settings.cassette) {
-  return normalizeCassetteParams(id,id==='ocean'?settings:settings.cassetteSettings?.[id]);
+function getCassetteParams(settings,id=settings.cassette){
+  // A tape is an authored preset, never a form-driven variation of it.
+  return {...getCassette(id).defaults};
 }
-function cassettePatch(settings,id,params) {
-  if(!CASSETTES.some(item=>item.id===id)) throw new Error(`Unknown cassette: ${id}`);
-  const normalized=normalizeCassetteParams(id,params);
-  if(id==='ocean'){
-    const {enabled,...ocean}=normalized; // Global power is never part of a tape insertion.
-    return {cassette:id,...ocean};
-  }
-  return {cassette:id,cassetteSettings:{...settings.cassetteSettings,[id]:normalized}};
+function cassettePatch(settings,id,params){
+  if(!CASSETTES.some(item=>item.id===id))throw new Error(`Unknown cassette: ${id}`);
+  return {cassette:id,cassetteSettings:{...settings.cassetteSettings,[id]:{...getCassette(id).defaults}}};
 }
 
 
@@ -161,673 +378,65 @@ function createAppearanceModel(form, initial, normalize, failureMessage, toOpera
   };
 }
 
-// Original, dependency-free finite-difference water simulation.
-const WAVE_COEFFICIENT = 0.28;
-const INTERIOR_RETENTION = 0.985;
-const EDGE_LOSS = 0.18;
-const SLOPE_SCALE = 2.5;
 
-const clampHeight = (value) => Math.max(-1, Math.min(1, value));
-const encodeSigned = (value) => Math.round((clampHeight(value) * 0.5 + 0.5) * 255);
-
-/**
- * A row-major height field with unit grid spacing and a fixed 1/60-second step.
- * Heights and disturbance strengths are dimensionless, bounded to [-1, 1].
- * No DOM, WebGL, timers, dependencies, or environment-specific globals are used.
- */
-class WaterField {
-  #previous;
-  #next;
-  #retention;
-
-  /** @param {number} width Positive integer number of columns.
-   *  @param {number} height Positive integer number of rows. */
-  constructor(width, height) {
-    if (!Number.isSafeInteger(width) || width < 1 ||
-        !Number.isSafeInteger(height) || height < 1 ||
-        !Number.isSafeInteger(width * height)) {
-      throw new RangeError('WaterField dimensions must be positive safe integers');
-    }
-    this.width = width;
-    this.height = height;
-    /**
-     * Current heights: current[y * width + x]. step() rotates the arrays;
-     * read this property again after stepping instead of caching its reference.
-     */
-    this.current = new Float32Array(width * height);
-    this.#previous = new Float32Array(width * height);
-    this.#next = new Float32Array(width * height);
-    this.#retention = new Float32Array(width * height);
-
-    // A quadratic sponge over up to eight cells; zero-height exterior neighbors
-    // and stronger edge loss absorb outgoing waves rather than wrap them around.
-    const spongeWidth = Math.min(8, Math.max(1, Math.min(width, height) / 4));
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const distance = Math.min(x, y, width - 1 - x, height - 1 - y);
-        const edge = Math.max(0, 1 - distance / spongeWidth);
-        this.#retention[y * width + x] = INTERIOR_RETENTION * (1 - EDGE_LOSS * edge * edge);
-      }
-    }
-  }
-
-  /**
-   * Add a compact, smooth cosine displacement, centered on fractional GRID
-   * coordinates (x, y), with support distance < radius (also in grid cells).
-   * strength is clamped to [-1, 1], as are all resulting heights. Apply the same
-   * accepted displacement to the previous state to avoid injecting artificial
-   * velocity on every call. Repeated saturated input cannot accumulate height.
-   * Off-grid centers are allowed; only the overlapping part is applied.
-   */
-  disturb(x, y, radius, strength) {
-    if (!Number.isFinite(x) || !Number.isFinite(y) ||
-        !Number.isFinite(radius) || radius <= 0 || !Number.isFinite(strength)) {
-      throw new RangeError('disturb requires finite coordinates/strength and a positive finite radius');
-    }
-    const amplitude = clampHeight(strength);
-    if (amplitude === 0) return;
-    const { width, height, current } = this;
-    const minX = Math.max(0, Math.ceil(x - radius));
-    const maxX = Math.min(width - 1, Math.floor(x + radius));
-    const minY = Math.max(0, Math.ceil(y - radius));
-    const maxY = Math.min(height - 1, Math.floor(y + radius));
-    for (let row = minY; row <= maxY; row++) {
-      for (let col = minX; col <= maxX; col++) {
-        const distance = Math.hypot((col - x) / radius, (row - y) / radius);
-        if (distance >= 1) continue;
-        const index = row * width + col;
-        const weight = 0.5 * (1 + Math.cos(Math.PI * distance));
-        const before = current[index];
-        const after = clampHeight(before + amplitude * weight);
-        current[index] = after;
-        this.#previous[index] = clampHeight(this.#previous[index] + (current[index] - before));
-      }
-    }
-  }
-
-  /**
-   * Advance exactly one 60 Hz tick. damping in [0,1], default .15.
-   * Higher values dissipate pointer-wave energy faster, not a fluid viscosity solver.
-   * With L(u) = left+right+up+down-4*u:
-   * next = retention * (2*current - previous + 0.28*L(current)).
-   * The squared Courant number 0.28 is below the 2-D five-point limit 0.5
-   * (Courant number sqrt(0.28) ~= 0.529). Interior retention is 1 - .1*damping;
-   * default .15 preserves 0.985 per tick and 0.8077 at outermost sponge cells.
-   * Multiplying the whole recurrence also relaxes the mean height toward zero,
-   * rather than leaving a permanent DC offset. Clipping is a last-resort bound
-   * for strong/continuous forcing, not the mechanism for linear stability.
-   */
-  step(damping = .15) {
-    if (!Number.isFinite(damping) || damping < 0 || damping > 1) {
-      throw new RangeError('damping must be a finite number between 0 and 1');
-    }
-    const retentionScale = (1 - .1 * damping) / INTERIOR_RETENTION;
-    const { width, height, current } = this;
-    const previous = this.#previous;
-    const next = this.#next;
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const index = y * width + x;
-        const center = current[index];
-        const left = x > 0 ? current[index - 1] : 0;
-        const right = x + 1 < width ? current[index + 1] : 0;
-        const up = y > 0 ? current[index - width] : 0;
-        const down = y + 1 < height ? current[index + width] : 0;
-        const laplacian = left + right + up + down - 4 * center;
-        next[index] = clampHeight((this.#retention[index] * retentionScale) *
-          (2 * center - previous[index] + WAVE_COEFFICIENT * laplacian));
-      }
-    }
-    this.#previous = current;
-    this.current = next;
-    this.#next = previous;
-  }
-
-  /**
-   * Write exactly width*height*4 bytes to an ordinary linear RGBA8 texture buffer.
-   * R = encode(2.5 * dx), G = encode(2.5 * dy), B = encode(height), A = 255,
-   * where dx=(right-left)/2, dy=(down-up)/2 (positive y points to later rows).
-   * Derivatives use clamp-to-edge heights at the boundary. encode(v) is
-   * round(255 * (0.5 + 0.5*clamp(v,-1,1))); a flat zero field is (128,128,128,255).
-   * Thus sample.rg*2-1 recovers the scaled, clipped slopes, not normalized XYZ
-   * normals. Divide by 2.5 for the original slopes, or amplify in the shader.
-   * RGBA8 has no exact 0.5: byte 128 decodes to +1/255 with that shader formula.
-   * Returns the supplied Uint8Array; no per-call arrays are allocated.
-   */
-  writeNormals(target) {
-    if (!(target instanceof Uint8Array)) {
-      throw new TypeError('writeNormals requires a Uint8Array');
-    }
-    if (target.length !== this.width * this.height * 4) {
-      throw new RangeError('writeNormals buffer length must equal width * height * 4');
-    }
-    const { width, height, current } = this;
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const index = y * width + x;
-        const left = current[y * width + Math.max(0, x - 1)];
-        const right = current[y * width + Math.min(width - 1, x + 1)];
-        const up = current[Math.max(0, y - 1) * width + x];
-        const down = current[Math.min(height - 1, y + 1) * width + x];
-        const offset = index * 4;
-        target[offset] = encodeSigned((right - left) * 0.5 * SLOPE_SCALE);
-        target[offset + 1] = encodeSigned((down - up) * 0.5 * SLOPE_SCALE);
-        target[offset + 2] = encodeSigned(current[index]);
-        target[offset + 3] = 255;
-      }
-    }
-    return target;
-  }
+/** Backing resolution is bounded; effect coordinates stay in CSS pixels. */
+function effectSize(width,height,dpr=1,maxResolution=1100){
+  width=Number.isFinite(width)?Math.max(0,width):0;
+  height=Number.isFinite(height)?Math.max(0,height):0;
+  if(!width||!height)return {width,height,pixelWidth:0,pixelHeight:0,scaleX:0,scaleY:0};
+  const limit=Number.isFinite(maxResolution)?Math.max(1,Math.min(1100,maxResolution)):1100;
+  const ratio=Math.min(Number.isFinite(dpr)&&dpr>0?dpr:1,1.5,limit/Math.max(width,height));
+  const pixelWidth=Math.max(1,Math.round(width*ratio)),pixelHeight=Math.max(1,Math.round(height*ratio));
+  return {width,height,pixelWidth,pixelHeight,scaleX:pixelWidth/width,scaleY:pixelHeight/height};
 }
 
-/** Visible ocean artwork, mounted behind the application columns by the adapter. */
-function createOceanRenderer(canvas, field) {
-  const gl = canvas.getContext('webgl', {
-    alpha: false, antialias: false, depth: false, stencil: false,
-    powerPreference: 'low-power', preserveDrawingBuffer: false,
-  });
-  if (!gl) throw new Error('WebGL unavailable; background artwork disabled.');
-  const resources = { shaders: [], program: null, buffer: null, texture: null };
-  function dispose() {
-    if (resources.texture) gl.deleteTexture(resources.texture);
-    if (resources.buffer) gl.deleteBuffer(resources.buffer);
-    if (resources.program) gl.deleteProgram(resources.program);
-    for (const shader of resources.shaders) gl.deleteShader(shader);
+/** No tape-id branches: the registry provides a self-contained local factory. */
+function createEffectRuntime({canvas,cassette,params,dark=false,reducedMotion=false,onError,maxResolution=1100}={}){
+  const entry=getCassetteEntry(typeof cassette==='string'?cassette:cassette?.id);
+  let settings=entry.normalize(params),size=effectSize(0,0),context=null,effect=null;
+  let disposed=false,failed=false,reported=false;
+  function report(reason){
+    if(reported)return;reported=true;
+    try{onError?.(reason instanceof Error?reason:new Error(String(reason)));}catch{/* Error reporting cannot break disposal. */}
   }
-  function compile(type, source) {
-    const shader = gl.createShader(type);
-    resources.shaders.push(shader);
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      throw new Error(`Ocean background shader: ${gl.getShaderInfoLog(shader)}`);
-    }
-    return shader;
-  }
-  try {
-    const vertex = compile(gl.VERTEX_SHADER, `
-      attribute vec2 position;
-      varying vec2 uv;
-      void main() {
-        uv = position * 0.5 + 0.5;
-        gl_Position = vec4(position, 0.0, 1.0);
-      }
-    `);
-    const fragment = compile(gl.FRAGMENT_SHADER, `
-      precision mediump float;
-      uniform sampler2D water;
-      uniform float aspect;
-      uniform float time;
-      uniform float darkMode;
-      uniform vec3 tintMultiplier;
-      uniform float brightness;
-      uniform float waveStrength;
-      varying vec2 uv;
-      float swell(vec2 p) {
-        return sin(p.x * 2.7 + p.y * 1.9 - time * .47) * .34
-          + sin(p.x * -3.6 + p.y * 5.1 - time * .63) * .18
-          + sin(p.x * 9.5 + p.y * 6.3 - time * .91) * .075
-          + sin(p.x * -17.0 + p.y * 12.0 + time * .73) * .032;
-      }
-      void main() {
-        vec2 p = vec2(uv.x * aspect, uv.y) * 5.0;
-        float e = .025;
-        float h = swell(p);
-        vec2 slope = vec2(swell(p + vec2(e, 0.0)) - h,
-                          swell(p + vec2(0.0, e)) - h) / e;
-        vec2 wake = (texture2D(water, vec2(uv.x, 1.0 - uv.y)).rg * 255.0 - 128.0) / 127.0;
-        wake.y = -wake.y;
-        vec3 n = normalize(vec3((-slope * .21 - wake * 4.2) * waveStrength, 1.0));
-        vec3 reflected = reflect(vec3(0.0, 0.0, -1.0), n);
-        vec3 sun = normalize(vec3(-.33, .47, 1.0));
-        float gloss = pow(max(dot(reflected, sun), 0.0), 48.0);
-        float broad = pow(max(dot(reflected, sun), 0.0), 6.0);
-        vec2 q = p + n.xy * .8;
-        float caustic = sin(q.x * 13.0 + sin(q.y * 8.0 + time * .3))
-                       * sin(q.y * 11.0 - sin(q.x * 7.0 - time * .27));
-        caustic = pow(max(0.0, 1.0 - abs(caustic)), 14.0);
-        float trough = clamp(.5 + (h * .28 + slope.x * .055) * waveStrength, .12, .85);
-        vec3 deep = mix(vec3(.10, .34, .43), vec3(.055, .09, .11), darkMode);
-        vec3 shallow = mix(vec3(.32, .68, .72), vec3(.10, .22, .25), darkMode);
-        vec3 color = mix(deep, shallow, trough);
-        color += broad * vec3(.05, .10, .11);
-        color += gloss * vec3(.18, .23, .23);
-        color += caustic * vec3(.03, .08, .08);
-        // Small exposure lift only; leave wave contrast, alpha and component layers unchanged.
-        gl_FragColor = vec4(clamp(color * tintMultiplier * brightness + vec3(0.012), 0.0, 1.0), 1.0);
-      }
-    `);
-    const program = gl.createProgram();
-    resources.program = program;
-    gl.attachShader(program, vertex);
-    gl.attachShader(program, fragment);
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      throw new Error(`Ocean background shader link: ${gl.getProgramInfoLog(program)}`);
-    }
-    gl.useProgram(program);
-    const buffer = gl.createBuffer();
-    resources.buffer = buffer;
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-    const position = gl.getAttribLocation(program, 'position');
-    gl.enableVertexAttribArray(position);
-    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
-    const texture = gl.createTexture();
-    resources.texture = texture;
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, field.width, field.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.uniform1i(gl.getUniformLocation(program, 'water'), 0);
-    const timeLocation = gl.getUniformLocation(program, 'time');
-    const aspectLocation = gl.getUniformLocation(program, 'aspect');
-    const darkLocation = gl.getUniformLocation(program, 'darkMode');
-    const tintLocation = gl.getUniformLocation(program, 'tintMultiplier');
-    const brightnessLocation = gl.getUniformLocation(program, 'brightness');
-    const waveLocation = gl.getUniformLocation(program, 'waveStrength');
-    const pixels = new Uint8Array(field.width * field.height * 4);
-    gl.clearColor(0, 0, 0, 0);
-    return {
-      clear() { if (!gl.isContextLost()) gl.clear(gl.COLOR_BUFFER_BIT); },
-      draw(time, dark, settings) {
-        if (gl.isContextLost()) return;
-        field.writeNormals(pixels);
-        gl.viewport(0, 0, canvas.width, canvas.height);
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, field.width, field.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-        gl.uniform1f(timeLocation, time);
-        gl.uniform1f(aspectLocation, canvas.width / canvas.height);
-        gl.uniform1f(darkLocation, dark ? 1 : 0);
-        const rgb = tintRGB(settings.tint);
-        const base = tintRGB(APPEARANCE_DEFAULTS.tint);
-        gl.uniform3f(tintLocation, rgb[0] / base[0], rgb[1] / base[1], rgb[2] / base[2]);
-        gl.uniform1f(brightnessLocation, settings.brightness);
-        gl.uniform1f(waveLocation, settings.waveStrength);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      },
-      dispose,
-    };
-  } catch (error) {
-    dispose();
-    throw error;
-  }
-}
-
-
-const TAU = Math.PI * 2;
-const STEP = 1 / 60;
-const RIPPLE_LIFETIME = 2;
-const finite = (value, fallback = 0) => Number.isFinite(value) ? value : fallback;
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-
-/** CSS coordinates remain unchanged; only the backing store is resolution limited. */
-function effectSize(width, height, dpr = 1, maxResolution = 1100) {
-  width = Math.max(0, finite(width));
-  height = Math.max(0, finite(height));
-  if (!width || !height) return { width, height, pixelWidth: 0, pixelHeight: 0, scaleX: 0, scaleY: 0 };
-  const limit = clamp(finite(maxResolution, 1100), 1, 1100);
-  const ratio = Math.min(Number.isFinite(dpr) && dpr > 0 ? dpr : 1, 1.5, limit / Math.max(width, height));
-  const pixelWidth = Math.max(1, Math.round(width * ratio));
-  const pixelHeight = Math.max(1, Math.round(height * ratio));
-  return { width, height, pixelWidth, pixelHeight, scaleX: pixelWidth / width, scaleY: pixelHeight / height };
-}
-
-/** Compact, smooth radial lens. Zero outside its support, including at the seam. */
-function lensOffset(x, y, px, py, radius, strength) {
-  if (!(radius > 0)) return [0, 0];
-  const dx = x - px;
-  const dy = y - py;
-  const q = Math.hypot(dx, dy) / radius;
-  if (q >= 1) return [0, 0];
-  const weight = (1 - q * q) ** 3 * strength * .32;
-  return [dx * weight, dy * weight];
-}
-
-/** Bounded radial displacement; age is real seconds, not speed-scaled time. */
-function rippleDisplacement(distance, age, speed, strength) {
-  if (age < 0 || age >= RIPPLE_LIFETIME || speed <= 0) return 0;
-  const radius = age * (100 + 100 * speed);
-  const band = (distance - radius) / 22;
-  return Math.sin(band * 2) * Math.exp(-band * band) * (1 - age / RIPPLE_LIFETIME) ** 2 * 9 * strength;
-}
-
-/** The original pointer trail: 16ms throttle, 120ms continuity, 7 CSS px sampling. */
-function oceanPointerTrail(previous, point, width, height, fieldWidth, fieldHeight, click) {
-  if (!click && previous && point.time - previous.time >= 0 && point.time - previous.time < .016) return null;
-  const from = previous && point.time >= previous.time && point.time - previous.time < .12 ? previous : point;
-  const dx = (point.x - from.x) * width;
-  const dy = (point.y - from.y) * height;
-  const count = click ? 1 : clamp(Math.ceil(Math.hypot(dx, dy) / 7), 1, 20);
-  const scale = fieldWidth / width;
-  const samples = [];
-  for (let index = 1; index <= count; index++) {
-    const t = index / count;
-    samples.push({
-      x: (from.x + (point.x - from.x) * t) * fieldWidth,
-      y: (from.y + (point.y - from.y) * t) * fieldHeight,
-      radius: Math.max(1.8, (click ? 24 : 14) * scale),
-      strength: click ? .65 : .17,
-    });
-  }
-  return samples;
-}
-
-/** CPU-only animation state; exported to test scheduling without a fake canvas. */
-function createEffectState(id) {
-  return { id, phase: 0, time: 0, accumulator: 0, ticks: 0, pointer: null,
-    cursor: { x: .5, y: .5, amount: 0 }, rings: [], lastRipple: null };
-}
-
-function updateEffectPointer(state, point, params, reducedMotion, width, height) {
-  if (point?.type === 'leave') {
-    state.pointer = null;
-    state.lastRipple = null;
-    return;
-  }
-  if (!point || !['move', 'down'].includes(point.type) || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
-  if (point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1 || reducedMotion) return;
-  const next = { x: point.x, y: point.y, time: finite(point.time, state.time) };
-  state.pointer = next;
-  if (state.id !== 'ripple' || params.speed <= 0 || params.strength <= 0) return;
-  const previous = state.lastRipple;
-  const elapsed = previous ? next.time - previous.time : Infinity;
-  const distance = previous ? Math.hypot((next.x - previous.x) * width, (next.y - previous.y) * height) : Infinity;
-  if (point.type !== 'down' && elapsed >= 0 && (elapsed < .08 || distance < 8)) return;
-  state.rings.push({ x: next.x, y: next.y, age: 0, strength: point.type === 'down' ? 1 : .45 });
-  if (state.rings.length > 8) state.rings.shift();
-  state.lastRipple = next;
-}
-
-/** Advances state only; ticks tells the ocean adapter exactly how many 60Hz steps to run. */
-function advanceEffectState(state, dt, params, reducedMotion = false) {
-  dt = Math.max(0, finite(dt));
-  state.ticks = 0;
-  if (reducedMotion) {
-    state.accumulator = 0;
-    state.cursor.amount = 0;
-    state.pointer = null;
-    state.rings.length = 0;
-    state.lastRipple = null;
-    return false;
-  }
-  if (state.id === 'ocean') {
-    if (params.speed <= 0) { state.accumulator = 0; return false; }
-    // Preserve the old adapter's .08s catch-up cap and fixed 60Hz damping law.
-    const elapsed = Math.min(dt, .08) * params.speed;
-    state.phase += elapsed;
-    state.accumulator += elapsed;
-    state.ticks = Math.floor((state.accumulator + 1e-12) / STEP);
-    state.accumulator = Math.max(0, state.accumulator - state.ticks * STEP);
-    return true;
-  }
-  if (state.id === 'ripple') {
-    if (params.speed <= 0 || params.strength <= 0) state.rings.length = 0;
-    for (const ring of state.rings) ring.age += dt;
-    state.rings = state.rings.filter(ring => ring.age < RIPPLE_LIFETIME - 1e-9);
-    return state.rings.length > 0;
-  }
-  const cursor = state.cursor;
-  const target = state.pointer;
-  const amount = target && params.strength > 0 ? 1 : 0;
-  // A stationary pointer settles completely: dot-field must not keep an idle RAF alive.
-  const ease = 1 - Math.exp(-dt * 11);
-  cursor.amount += (amount - cursor.amount) * ease;
-  if (target) {
-    cursor.x += (target.x - cursor.x) * ease;
-    cursor.y += (target.y - cursor.y) * ease;
-  }
-  const near = Math.abs(cursor.amount - amount) < .001 && (!target || Math.hypot(cursor.x - target.x, cursor.y - target.y) < .0001);
-  if (near || (state.id === 'contour' && params.speed <= 0)) {
-    cursor.amount = amount;
-    if (target) { cursor.x = target.x; cursor.y = target.y; }
-  }
-  if (state.id === 'contour') {
-    state.phase += Math.min(dt, .08) * params.speed;
-    return params.speed > 0;
-  }
-  return !near;
-}
-
-function color(tint, dark, alpha, blue = false) {
-  const rgb = [1, 3, 5].map(offset => parseInt(tint.slice(offset, offset + 2), 16));
-  // A restrained blue/violet variation of the chosen tint, not an opaque backdrop.
-  if (blue) { rgb[0] *= .82; rgb[1] *= 1.02; rgb[2] *= 1.1; }
-  const lift = dark ? 1.12 : .8;
-  return `rgba(${rgb.map(value => Math.round(clamp(value * lift, 0, 255))).join(',')},${alpha})`;
-}
-
-function drawDots(ctx, size, state, params, dark) {
-  const { width, height } = size;
-  const gap = 25 * params.scale;
-  const radius = Math.max(80, Math.min(width, height) * .24);
-  const px = state.cursor.x * width;
-  const py = state.cursor.y * height;
-  for (let group = 0; group < 2; group++) {
-    ctx.fillStyle = color(params.tint, dark, dark ? .72 : .6, group === 1);
-    ctx.beginPath();
-    for (let row = 0, y = gap / 2; y < height; row++, y += gap) {
-      for (let col = 0, x = gap / 2; x < width; col++, x += gap) {
-        if ((row + col) % 2 !== group) continue;
-        const [dx, dy] = lensOffset(x, y, px, py, radius, state.cursor.amount * params.strength);
-        const r = .85 * Math.min(params.scale, 1.3);
-        ctx.moveTo(x + dx + r, y + dy);
-        ctx.arc(x + dx, y + dy, r, 0, TAU);
-      }
-    }
-    ctx.fill();
-  }
-}
-
-function ripplePoint(x, y, size, state, params) {
-  let dx = 0;
-  let dy = 0;
-  for (const ring of state.rings) {
-    const rx = x - ring.x * size.width;
-    const ry = y - ring.y * size.height;
-    const distance = Math.hypot(rx, ry);
-    if (distance < .001) continue;
-    const offset = rippleDisplacement(distance, ring.age, params.speed, params.strength * ring.strength);
-    dx += rx / distance * offset;
-    dy += ry / distance * offset;
-  }
-  return [x + dx, y + dy];
-}
-
-function drawRipple(ctx, size, state, params, dark) {
-  const { width, height } = size;
-  const gap = 42 * params.scale;
-  ctx.strokeStyle = color(params.tint, dark, dark ? .24 : .18);
-  ctx.lineWidth = .6;
-  ctx.beginPath();
-  for (let x = gap / 2; x < width; x += gap) {
-    for (let y = 0; y <= height + 8; y += 8) {
-      const p = ripplePoint(x, Math.min(y, height), size, state, params);
-      if (y === 0) ctx.moveTo(...p); else ctx.lineTo(...p);
-    }
-  }
-  for (let y = gap / 2; y < height; y += gap) {
-    for (let x = 0; x <= width + 8; x += 8) {
-      const p = ripplePoint(Math.min(x, width), y, size, state, params);
-      if (x === 0) ctx.moveTo(...p); else ctx.lineTo(...p);
-    }
-  }
-  ctx.stroke();
-  for (const ring of state.rings) {
-    const alpha = .34 * params.strength * ring.strength * (1 - ring.age / RIPPLE_LIFETIME) ** 2;
-    ctx.strokeStyle = color(params.tint, dark, alpha);
-    ctx.lineWidth = .75;
-    ctx.beginPath();
-    ctx.arc(ring.x * width, ring.y * height, ring.age * (100 + 100 * params.speed), 0, TAU);
-    ctx.stroke();
-  }
-}
-
-function drawContours(ctx, size, state, params, dark) {
-  const { width, height } = size;
-  const base = Math.min(width, height);
-  const phase = state.phase * .16;
-  const px = state.cursor.x * width;
-  const py = state.cursor.y * height;
-  ctx.strokeStyle = color(params.tint, dark, dark ? .42 : .34);
-  ctx.lineWidth = .7;
-  ctx.beginPath();
-  // Seven irregular level loops: small slow deformations, no texture or noise library.
-  for (let line = 0; line < 7; line++) {
-    const radius = base * (.16 + line * .105) * params.scale;
-    for (let index = 0; index <= 128; index++) {
-      const angle = index / 128 * TAU;
-      const shape = 1 + .075 * Math.sin(angle * 3 + phase + line * .17)
-        + .045 * Math.cos(angle * 5 - phase * .7);
-      const x = width * .49 + Math.cos(angle) * radius * shape * 1.35;
-      const y = height * .54 + Math.sin(angle) * radius * shape * .78;
-      const [dx, dy] = lensOffset(x, y, px, py, Math.max(100, base * .38), params.strength * state.cursor.amount);
-      if (!index) ctx.moveTo(x + dx, y + dy); else ctx.lineTo(x + dx, y + dy);
-    }
-  }
-  ctx.stroke();
-}
-
-/**
- * One canvas, one context type, no events/RAF/DOM/DSH. Call resize with CSS pixels,
- * then frame with dt/time in seconds. Wake the external scheduler after every
- * resize/update/pointer; false means idle, not disposed. params updates are patches.
- * cassette is an id or catalog descriptor and is immutable for this runtime.
- * CSS sizing, opacity, visibility, context loss and canvas replacement belong outside.
- */
-function createEffectRuntime({ canvas, cassette, params, dark = false, reducedMotion = false, onError, maxResolution = 1100 } = {}) {
-  const descriptor = getCassette(typeof cassette === 'string' ? cassette : cassette?.id);
-  let settings = normalizeCassetteParams(descriptor.id, params && typeof params === 'object' ? params : {});
-  const state = createEffectState(descriptor.id);
-  let size = effectSize(0, 0);
-  let ctx = null;
-  let field = null;
-  let renderer = null;
-  let lastOceanPointer = null;
-  let disposed = false;
-  let failed = false;
-  let reported = false;
-  let dirty = true;
-
-  function report(error) {
-    if (reported) return;
-    reported = true;
-    try { if (typeof onError === 'function') onError(error instanceof Error ? error : new Error(String(error))); } catch { /* Reporting cannot break cleanup. */ }
-  }
-  function release() {
-    const current = renderer;
-    renderer = null;
-    field = null;
-    ctx = null;
-    lastOceanPointer = null;
-    canvas = null;
-    state.rings.length = 0;
-    state.pointer = null;
-    if (current) current.dispose();
-  }
-  function fail(error) {
-    failed = true;
-    report(error);
-    try { release(); } catch (cleanupError) { report(cleanupError); }
-  }
-  function ensureResources() {
-    if (ctx || renderer) return;
-    if (!canvas || typeof canvas.getContext !== 'function') throw new Error('An effect runtime requires a canvas with getContext().');
-    if (descriptor.id === 'ocean') {
-      const cell = Math.max(size.width, size.height) / 320;
-      field = new WaterField(Math.max(32, Math.round(size.width / cell)), Math.max(32, Math.round(size.height / cell)));
-      renderer = createOceanRenderer(canvas, field);
-    } else {
-      ctx = canvas.getContext('2d', { alpha: true });
-      if (!ctx) throw new Error('Canvas2D unavailable; background artwork disabled.');
-    }
+  function release(){const active=effect;effect=null;context=null;canvas=null;active?.dispose();}
+  function fail(error){failed=true;report(error);try{release();}catch(reason){report(reason);}}
+  function ensure(){
+    if(effect)return;
+    if(!canvas||typeof canvas.getContext!=='function')throw new Error('An effect runtime requires a canvas with getContext().');
+    context=canvas.getContext('2d',{alpha:true});
+    if(!context)throw new Error('Canvas2D unavailable.');
+    effect=entry.create({context,params:settings,dark,reducedMotion});
+    effect.resize(size.width,size.height);
   }
   return {
-    resize(width, height, dpr = 1) {
-      if (disposed || failed) return;
-      const nextSize = effectSize(width, height, dpr, maxResolution);
-      const geometryChanged = size.width !== nextSize.width || size.height !== nextSize.height;
-      size = nextSize;
-      dirty = true;
-      lastOceanPointer = null;
-      state.lastRipple = null;
-      if (!size.pixelWidth || !size.pixelHeight) return;
-      try {
-        if (!canvas) throw new Error('An effect runtime requires a canvas.');
-        if (renderer && geometryChanged) {
-          // Rebuild size-dependent simulation/GL resources on the SAME canvas/context.
-          const previous = renderer;
-          renderer = null;
-          field = null;
-          state.accumulator = 0;
-          previous.dispose();
-        }
-        if (canvas.width !== size.pixelWidth) canvas.width = size.pixelWidth;
-        if (canvas.height !== size.pixelHeight) canvas.height = size.pixelHeight;
-        ensureResources();
-      } catch (error) { fail(error); }
+    resize(width,height,dpr=1){
+      if(disposed||failed)return;
+      size=effectSize(width,height,dpr,maxResolution);
+      if(!size.pixelWidth||!size.pixelHeight)return;
+      try{
+        if(!canvas)throw new Error('An effect runtime requires a canvas.');
+        if(canvas.width!==size.pixelWidth)canvas.width=size.pixelWidth;
+        if(canvas.height!==size.pixelHeight)canvas.height=size.pixelHeight;
+        ensure();effect.resize(size.width,size.height);
+      }catch(error){fail(error);}
     },
-    update(patch = {}) {
-      if (disposed || failed || !patch || typeof patch !== 'object') return;
-      let changed = false;
-      if (patch.params && typeof patch.params === 'object') {
-        const next = normalizeCassetteParams(descriptor.id, { ...settings, ...patch.params });
-        changed = Object.keys(next).some(key => next[key] !== settings[key]);
-        settings = next;
-      }
-      if (typeof patch.dark === 'boolean' && dark !== patch.dark) { dark = patch.dark; changed = true; }
-      if (typeof patch.reducedMotion === 'boolean' && reducedMotion !== patch.reducedMotion) { reducedMotion = patch.reducedMotion; changed = true; }
-      if (reducedMotion || settings.speed <= 0) {
-        state.accumulator = 0;
-        lastOceanPointer = null;
-      }
-      dirty ||= changed;
+    update(patch={}){
+      if(disposed||failed||!patch||typeof patch!=='object')return;
+      if(patch.params&&typeof patch.params==='object')settings=entry.normalize({...settings,...patch.params});
+      if(typeof patch.dark==='boolean')dark=patch.dark;
+      if(typeof patch.reducedMotion==='boolean')reducedMotion=patch.reducedMotion;
+      try{effect?.update({params:settings,dark,reducedMotion});}catch(error){fail(error);}
     },
-    pointer(point) {
-      if (disposed || failed || !size.pixelWidth || !size.pixelHeight) return;
-      try {
-        updateEffectPointer(state, point, settings, reducedMotion, size.width, size.height);
-        if (point?.type === 'leave') { lastOceanPointer = null; dirty = true; return; }
-        if (descriptor.id === 'ocean') {
-          if (!field || reducedMotion || settings.speed <= 0 || !point || !['move', 'down'].includes(point.type)
-              || !Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1) return;
-          const next = { x: point.x, y: point.y, time: finite(point.time, state.time) };
-          const samples = oceanPointerTrail(lastOceanPointer, next, size.width, size.height, field.width, field.height, point.type === 'down');
-          if (!samples) return;
-          for (const sample of samples) field.disturb(sample.x, sample.y, sample.radius, sample.strength);
-          lastOceanPointer = next;
-        }
-        dirty = true;
-      } catch (error) { fail(error); }
+    pointer(point){if(disposed||failed)return;try{effect?.pointer(point);}catch(error){fail(error);}},
+    frame(dt,time){
+      if(disposed||failed||!size.pixelWidth||!size.pixelHeight)return false;
+      try{
+        ensure();context.setTransform(size.scaleX,0,0,size.scaleY,0,0);context.clearRect(0,0,size.width,size.height);
+        return effect.frame(dt,time);
+      }catch(error){fail(error);return false;}
     },
-    frame(dt, time) {
-      if (disposed || failed || !size.pixelWidth || !size.pixelHeight) return false;
-      try {
-        state.time = finite(time, state.time);
-        const needsFrame = advanceEffectState(state, dt, settings, reducedMotion);
-        ensureResources();
-        if (renderer) {
-          for (let tick = 0; tick < state.ticks; tick++) field.step(settings.damping);
-          if (dirty || needsFrame || state.ticks) renderer.draw(state.phase, dark, settings);
-        } else {
-          // Always draw the final resting state once, including the last ripple frame.
-          ctx.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
-          ctx.clearRect(0, 0, size.width, size.height);
-          if (descriptor.id === 'dot-field') drawDots(ctx, size, state, settings, dark);
-          else if (descriptor.id === 'ripple') drawRipple(ctx, size, state, settings, dark);
-          else drawContours(ctx, size, state, settings, dark);
-        }
-        dirty = false;
-        return needsFrame;
-      } catch (error) { fail(error); return false; }
-    },
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      try { release(); } catch (error) { report(error); }
-    },
+    dispose(){if(disposed)return;disposed=true;try{release();}catch(error){report(error);}},
   };
 }
 
@@ -835,7 +444,7 @@ function createEffectRuntime({ canvas, cassette, params, dark = false, reducedMo
 /** The only browser adapter: cassettes receive pixels and values, never DSH or DOM events. */
 function createEffectSurface(React, ctx) {
   const h=React.createElement;
-  return function EffectSurface({cassette,params,enabled=true,preview=false,onError,onReady}) {
+  return function EffectSurface({cassette,params,enabled=true,preview=false,displayOpacity,onError,onReady}) {
     const canvasRef=React.useRef(null), current=React.useRef({params,enabled,onError});
     const wake=React.useRef(()=>{});
     const [failure,setFailure]=React.useState('');
@@ -901,6 +510,7 @@ function createEffectSurface(React, ctx) {
       pointerTarget.addEventListener('pointermove',pointer,{passive:true});
       pointerTarget.addEventListener('pointerdown',pointer,{passive:true});
       if(preview)canvas.addEventListener('pointerleave',leave,{passive:true});
+      else document.documentElement.addEventListener('pointerleave',leave,{passive:true});
       document.addEventListener('visibilitychange',visibility);
       window.addEventListener('blur',blur);window.addEventListener('focus',focus);
       motion.addEventListener('change',refresh);
@@ -912,13 +522,14 @@ function createEffectSurface(React, ctx) {
         disposed=true;wake.current=()=>{};stop();runtime?.dispose();runtime=null;observer.disconnect();offTheme();
         pointerTarget.removeEventListener('pointermove',pointer);pointerTarget.removeEventListener('pointerdown',pointer);
         if(preview)canvas.removeEventListener('pointerleave',leave);
+        else document.documentElement.removeEventListener('pointerleave',leave);
         document.removeEventListener('visibilitychange',visibility);window.removeEventListener('blur',blur);window.removeEventListener('focus',focus);
         motion.removeEventListener('change',refresh);canvas.removeEventListener('webglcontextlost',lost);canvas.removeEventListener('webglcontextrestored',restored);
       };
     },[cassette,preview]);
     return h('div',{style:{position:'relative',width:'100%',height:'100%',overflow:'hidden'},'data-effect-surface':cassette},
-      h('canvas',{key:cassette,ref:canvasRef,'aria-hidden':true,style:{display:'block',width:'100%',height:'100%',opacity:enabled&&!failure?params.opacity:0,pointerEvents:preview?'auto':'none'}}),
-      preview&&failure?h('p',{role:'status',style:{position:'absolute',bottom:12,left:16,right:16,fontSize:11,color:'var(--dsw-alias-label-secondary)'}},ctx.locale.getSnapshot().active?.startsWith('zh')?'当前效果暂不可用，请切换其他磁带。':'This effect is unavailable. Try another tape.'):null);
+      h('canvas',{key:cassette,ref:canvasRef,'aria-hidden':true,style:{display:'block',width:'100%',height:'100%',opacity:enabled&&!failure?(displayOpacity??params.opacity):0,pointerEvents:preview?'auto':'none'}}),
+      preview&&failure?h('p',{role:'status',style:{position:'absolute',bottom:12,left:16,right:16,fontSize:11,color:'var(--dsw-alias-label-secondary)'}},ctx.locale.getSnapshot().active?.startsWith('zh')?'Dots 暂不可用，请重新打开设置或刷新页面。':'Dots is unavailable. Reopen settings or refresh the page.'):null);
   };
 }
 
@@ -926,220 +537,78 @@ function createEffectSurface(React, ctx) {
 /** Flat dictionaries: register these in the same locale namespace as the deck page. */
 const DECK_DICTS = {
   en: {
-    'deck.locale': 'en',
-    'deck.title': 'Background Tapes',
-    'deck.tagline': 'A small collection of quieter spaces.',
-    'deck.background': 'Background',
-    'deck.enable': 'Turn background on',
-    'deck.disable': 'Turn background off',
-    'deck.on': 'On',
-    'deck.off': 'Off',
-    'deck.preview': 'Audition',
-    'deck.previewOnly': 'Preview only',
-    'deck.playing': 'Now playing',
-    'deck.inserted': 'Inserted',
-    'deck.paused': 'Background off',
-    'deck.unsaved': 'Unapplied changes',
-    'deck.insert': 'Insert tape',
-    'deck.apply': 'Insert tape',
-    'deck.previewLabel': 'Interactive preview of the selected background tape',
-    'deck.touch': 'Move your pointer. Take a moment.',
-    'deck.previewError': 'This preview could not be rendered. You can still choose a tape and save its settings.',
-    'deck.offHint': 'Your background is off. This is a preview; inserting a tape will not turn it on.',
-    'deck.draftHint': 'Only this preview has changed. Insert the tape to use these settings.',
-    'deck.auditionHint': 'Just an audition. Your background stays as it is until you insert this tape.',
-    'deck.playingHint': 'This tape is your current background.',
-    'deck.tune': 'Fine-tune',
-    'deck.tuneHint': 'Open one control at a time. Every adjustment stays in this preview.',
-    'deck.close': 'Close control',
-    'deck.reset': 'Reset this tape',
-    'deck.resetHint': 'Restore the selected tape’s default settings in this preview only.',
-    'deck.resetNotice': 'Defaults restored in the preview. Insert the tape to apply them.',
-    'deck.drawer': 'The tape drawer',
-    'deck.drawerHint': 'Four little atmospheres. Pick one to try.',
-    'deck.choose': 'Audition tape',
-    'deck.chooseHint': 'Selecting another tape discards unapplied adjustments, not your saved background.',
-    'deck.discarded': 'Previous preview adjustments were discarded. Your saved background has not changed.',
-    'deck.remote': 'Saved settings changed elsewhere. Your unapplied preview has been kept; inserting will apply it over the latest settings.',
-    'deck.loading': 'Loading your tapes…',
-    'deck.saving': 'Saving…',
-    'deck.saved': 'Saved',
-    'deck.readOnly': 'Read-only. You can audition tapes, but cannot save changes.',
-    'deck.saveError': 'The tape could not be saved. Your preview has been kept so you can try again.',
-    'deck.tint': 'Tone',
-    'deck.tintHint': 'A color for this atmosphere. Enter a six-digit hex color.',
-    'deck.tintInvalid': 'Use a six-digit hex color, such as #8b91d4.',
-    'deck.brightness': 'Light',
-    'deck.brightnessHint': 'From a softer glow to a brighter surface.',
-    'deck.brightnessLow': 'Soft',
-    'deck.brightnessHigh': 'Bright',
-    'deck.opacity': 'Presence',
-    'deck.opacityHint': 'A quiet trace or a more visible texture. Text stays solid.',
-    'deck.opacityLow': 'Subtle',
-    'deck.opacityHigh': 'Vivid',
-    'deck.strength': 'Response',
-    'deck.strengthHint': 'How strongly the surface responds to your pointer.',
-    'deck.strengthLow': 'Gentle',
-    'deck.strengthHigh': 'Expressive',
-    'deck.scale': 'Spacing',
-    'deck.scaleHint': 'Give the pattern a little more or less room.',
-    'deck.scaleLow': 'Close',
-    'deck.scaleHigh': 'Open',
-    'deck.waveStrength': 'Waves',
-    'deck.waveStrengthHint': 'From a smooth sea to more sculpted waves.',
-    'deck.waveStrengthLow': 'Smooth',
-    'deck.waveStrengthHigh': 'Rolling',
-    'deck.speed': 'Pace',
-    'deck.speedHint': 'Slow the motion down, or let it move a little faster.',
-    'deck.speedLow': 'Slow',
-    'deck.speedHigh': 'Swift',
-    'deck.damping': 'Settling',
-    'deck.dampingHint': 'How quickly pointer ripples fade. The natural ocean swell keeps flowing.',
-    'deck.dampingLow': 'Lingering',
-    'deck.dampingHigh': 'Quick to calm',
+    'deck.locale': 'en', 'deck.title': 'Dots Background',
+    'deck.tagline': 'Blue-violet to pink. A little light, a little gravity.',
+    'deck.background': 'Background', 'deck.enable': 'Turn background on', 'deck.disable': 'Turn background off',
+    'deck.preview': 'Audition', 'deck.previewOnly': 'Preview only', 'deck.playing': 'Now playing', 'deck.inserted': 'Ready to play',
+    'deck.insert': 'Use Dots', 'deck.previewLabel': 'Interactive preview of the fixed Dots background',
+    'deck.touch': 'Move your pointer. Watch the dots grow.',
+    'deck.previewError': 'The preview could not be rendered. Your saved background has not been changed.',
+    'deck.offHint': 'Your background is off. You can audition Dots here; using it will not turn the background on.',
+    'deck.auditionHint': 'One finished preset. Audition here, then use it as your background.',
+    'deck.playingHint': 'Dots is your current background. No tuning needed.',
+    'deck.drawer': 'The tape drawer', 'deck.drawerHint': 'One tape. Dense dots, a wide lens, a soft glow.',
+    'deck.choose': 'Audition Dots', 'deck.fixed': 'A finished preset · no controls to adjust',
+    'deck.loading': 'Loading Dots…', 'deck.saving': 'Saving…', 'deck.saved': 'Saved',
+    'deck.readOnly': 'Read-only. You can audition Dots, but cannot save changes.',
+    'deck.saveError': 'Dots could not be saved. You can try again.',
   },
   zh: {
-    'deck.locale': 'zh',
-    'deck.title': '背景磁带',
-    'deck.tagline': '收藏几种安静，给日常换个背景。',
-    'deck.background': '背景',
-    'deck.enable': '开启背景',
-    'deck.disable': '关闭背景',
-    'deck.on': '开',
-    'deck.off': '关',
-    'deck.preview': '试听中',
-    'deck.previewOnly': '仅预览',
-    'deck.playing': '正在播放',
-    'deck.inserted': '已插入',
-    'deck.paused': '背景已关闭',
-    'deck.unsaved': '有未应用的调整',
-    'deck.insert': '插入使用',
-    'deck.apply': '插入使用',
-    'deck.previewLabel': '当前所选背景磁带的可交互预览',
-    'deck.touch': '划过这里，停留片刻。',
-    'deck.previewError': '暂时无法渲染预览，仍可选择磁带、调整并保存设置。',
-    'deck.offHint': '背景已关闭。这里仍可试听，插入磁带不会自动开启背景。',
-    'deck.draftHint': '调整只在这里试听，点击「插入使用」后才会应用。',
-    'deck.auditionHint': '先试听一下。插入之前，不会改变你正在使用的背景。',
-    'deck.playingHint': '这盘磁带，就是你当前的背景。',
-    'deck.tune': '细调',
-    'deck.tuneHint': '一次打开一项，调整仅作用于当前试听。',
-    'deck.close': '收起调节',
-    'deck.reset': '重置这盘',
-    'deck.resetHint': '仅将当前磁带的试听参数恢复默认，插入后才保存。',
-    'deck.resetNotice': '试听已恢复默认；点击「插入使用」后才会应用。',
-    'deck.drawer': '磁带抽屉',
-    'deck.drawerHint': '四种氛围，挑一盘听听。',
-    'deck.choose': '试听磁带',
-    'deck.chooseHint': '换一盘会丢弃未应用的试听调整，不会改变已保存的背景。',
-    'deck.discarded': '上一盘未应用的试听调整已丢弃，已保存的背景没有改变。',
-    'deck.remote': '设置已在其他地方更新。你的未应用试听已保留；插入时会基于最新设置应用。',
-    'deck.loading': '正在读取磁带…',
-    'deck.saving': '正在保存…',
-    'deck.saved': '已保存',
-    'deck.readOnly': '当前设置只读：可以试听，暂时不能保存。',
-    'deck.saveError': '未能保存这盘磁带。试听调整已保留，可以再次插入。',
-    'deck.tint': '色调',
-    'deck.tintHint': '为这片氛围选一种色调，输入六位十六进制颜色。',
-    'deck.tintInvalid': '请输入六位十六进制颜色，例如 #8b91d4。',
-    'deck.brightness': '光线',
-    'deck.brightnessHint': '柔和一点，或让水面明亮一些。',
-    'deck.brightnessLow': '柔和',
-    'deck.brightnessHigh': '明亮',
-    'deck.opacity': '浓淡',
-    'deck.opacityHint': '若隐若现，或更有存在感；不改变文字透明度。',
-    'deck.opacityLow': '淡淡的',
-    'deck.opacityHigh': '更明显',
-    'deck.strength': '回应',
-    'deck.strengthHint': '让表面对指尖的回应轻一点，或更鲜明。',
-    'deck.strengthLow': '轻柔',
-    'deck.strengthHigh': '鲜明',
-    'deck.scale': '间距',
-    'deck.scaleHint': '让图案紧凑一些，或留出更多呼吸的空间。',
-    'deck.scaleLow': '紧凑',
-    'deck.scaleHigh': '舒展',
-    'deck.waveStrength': '浪高',
-    'deck.waveStrengthHint': '从平滑的水面，到更有层次的波峰。',
-    'deck.waveStrengthLow': '平静',
-    'deck.waveStrengthHigh': '起伏',
-    'deck.speed': '节奏',
-    'deck.speedHint': '慢慢漂流，或流动得轻快一些。',
-    'deck.speedLow': '缓慢',
-    'deck.speedHigh': '轻快',
-    'deck.damping': '余波',
-    'deck.dampingHint': '调节指尖涟漪多久平息；自然涌浪仍会继续。',
-    'deck.dampingLow': '余韵悠长',
-    'deck.dampingHigh': '更快平息',
+    'deck.locale': 'zh', 'deck.title': 'Dots 点阵背景',
+    'deck.tagline': '蓝紫到粉紫，一点柔光，一点引力。',
+    'deck.background': '背景', 'deck.enable': '开启背景', 'deck.disable': '关闭背景',
+    'deck.preview': '试听中', 'deck.previewOnly': '仅预览', 'deck.playing': '正在播放', 'deck.inserted': '已就绪',
+    'deck.insert': '使用 Dots', 'deck.previewLabel': 'Dots 固定背景效果的可交互预览',
+    'deck.touch': '划过这里，看点阵轻轻放大。',
+    'deck.previewError': '暂时无法渲染预览，已保存的背景没有改变。',
+    'deck.offHint': '背景已关闭。这里仍可试听；使用 Dots 不会自动开启背景。',
+    'deck.auditionHint': '效果已调好，先在这里试听，喜欢就用作背景。',
+    'deck.playingHint': 'Dots 就是你当前的背景，无需再调参数。',
+    'deck.drawer': '磁带抽屉', 'deck.drawerHint': '只留这一盘：密集点阵、宽幅透镜与柔光。',
+    'deck.choose': '试听 Dots', 'deck.fixed': '效果已调好 · 无需设置参数',
+    'deck.loading': '正在读取 Dots…', 'deck.saving': '正在保存…', 'deck.saved': '已保存',
+    'deck.readOnly': '当前设置只读：可以试听 Dots，暂时不能保存。',
+    'deck.saveError': '未能保存 Dots，可以再次尝试。',
   },
 };
 
-// An ocean's global enabled flag is deliberately not part of an audition draft.
-function deckParams(settings, id) {
-  const { enabled: _enabled, ...params } = getCassetteParams(settings, id);
-  return params;
-}
-function signature(params) {
-  return JSON.stringify(Object.keys(params).sort().map(key => [key, params[key]]));
-}
-const validTint = value => /^#[\da-f]{6}$/i.test(value);
+const signature = params => JSON.stringify(Object.keys(params).filter(key => key !== 'enabled').sort().map(key => [key, params[key]]));
 
-/** Original printed cassette artwork. Literal colors are confined to this SVG. */
+/** Original static cassette art: gradient dots, lens magnification and soft light. */
 function createTapeArtwork(React) {
   const h = React.createElement;
   return function TapeArtwork({ tape }) {
-    const palettes = {
-      'dot-field': ['#1c2036', '#272a46', '#8785c5', '#c4a1c8'],
-      ripple: ['#172a31', '#20383e', '#6f9fa5', '#abc1bc'],
-      contour: ['#2b2924', '#39342b', '#b3a17a', '#d5c8a5'],
-      ocean: ['#192b35', '#213d4a', '#659ba9', '#a3bec9'],
-    };
-    const [body, ink, accent, paper] = palettes[tape.id] || palettes.ocean;
-    let pattern;
-    if (tape.id === 'dot-field') {
-      pattern = Array.from({ length: 117 }, (_, i) => {
-        const col = i % 13, row = Math.floor(i / 13);
-        const x = 70 + col * 12, y = 13 + row * 8;
-        const d = Math.hypot(x - 159, (y - 49) * 1.5);
-        const bend = Math.max(0, 1 - d / 69);
-        return h('circle', { key: i, cx: x + bend * (x - 159) * .26,
-          cy: y + bend * (y - 49) * .5, r: .65 + bend * .6, fill: paper, opacity: .24 + bend * .56 });
-      });
-      pattern.push(h('ellipse', { key: 'orbit', cx: 159, cy: 48, rx: 40, ry: 30,
-        fill: 'none', stroke: accent, strokeWidth: .7, opacity: .5, transform: 'rotate(-22 159 48)' }));
-    } else if (tape.id === 'ripple') {
-      pattern = Array.from({ length: 10 }, (_, i) => h('ellipse', { key: i,
-        cx: 153, cy: 46, rx: 7 + i * 9, ry: 4 + i * 5.1, fill: 'none',
-        stroke: i % 3 === 0 ? paper : accent, strokeWidth: i === 0 ? 1.2 : .6, opacity: .8 - i * .055 }));
-      pattern.push(h('path', { key: 'axis', d: 'M153 15V79M88 46h130', stroke: paper, strokeWidth: .5, opacity: .16 }));
-    } else if (tape.id === 'contour') {
-      pattern = Array.from({ length: 15 }, (_, i) => h('path', { key: i,
-        d: `M65 ${-15 + i * 7} C100 ${34 + i * 2.5},122 ${-9 + i * 5},148 ${15 + i * 4} S188 ${74 + i * 3},232 ${31 + i * 4.5}`,
-        fill: 'none', stroke: i % 4 === 0 ? paper : accent, strokeWidth: i % 4 === 0 ? .85 : .55, opacity: .72 }));
-    } else {
-      pattern = Array.from({ length: 13 }, (_, i) => h('path', { key: i,
-        d: `M65 ${20 + i * 4.7} Q92 ${8 + i * 6},122 ${23 + i * 4.1} T179 ${18 + i * 4.8} T239 ${25 + i * 4.5}`,
-        fill: 'none', stroke: i % 4 === 0 ? paper : accent, strokeWidth: i % 4 === 0 ? 1.3 : .6, opacity: .63 }));
-    }
+    const id = `dots-${React.useId().replace(/[^a-z0-9_-]/gi, '')}`;
+    const dots = Array.from({ length: 264 }, (_, i) => {
+      const x = 66 + (i % 24) * 6.7, y = 15 + Math.floor(i / 24) * 6;
+      const dx = x - 155, dy = y - 46, distance = Math.hypot(dx, dy * 1.35);
+      const lens = Math.max(0, 1 - distance / 66) ** 2;
+      return h('circle', { key: i, cx: x + dx * lens * .48, cy: y + dy * lens * .48,
+        r: .64 + lens * 1.6, opacity: .42 + lens * .58 });
+    });
     return h('svg', { className: 'tape-deck-art', viewBox: '0 0 240 148', fill: 'none', 'aria-hidden': true, focusable: false },
-      h('path', { d: 'M14 3h212a11 11 0 0 1 11 11v116a11 11 0 0 1-11 11h-53l-6 4H73l-6-4H14a11 11 0 0 1-11-11V14A11 11 0 0 1 14 3Z', fill: body, stroke: accent, strokeOpacity: .3 }),
-      h('rect', { x: 10, y: 10, width: 220, height: 74, rx: 5, fill: ink }),
-      h('svg', { x: 11, y: 11, width: 218, height: 72, viewBox: '11 11 218 72', overflow: 'hidden' }, ...pattern),
-      h('path', { d: 'M19 19h35M19 22h21', stroke: paper, strokeWidth: .65, opacity: .55 }),
-      h('text', { x: 19, y: 58, fill: paper, fontSize: 28, fontWeight: 300, fontFamily: 'ui-monospace, monospace', letterSpacing: '-2' }, tape.number),
-      h('path', { d: 'M20 70h5m3 0h2m3 0h6m3 0h2m3 0h4', stroke: accent, strokeWidth: 2, opacity: .75 }),
-      h('rect', { x: 28, y: 90, width: 184, height: 33, rx: 16.5, fill: '#10171e', stroke: accent, strokeWidth: .55, strokeOpacity: .3 }),
-      h('path', { d: 'M76 92h88M76 121h88', stroke: paper, strokeWidth: .55, opacity: .22 }),
+      h('defs', null,
+        h('linearGradient', { id: `${id}-tone`, x1: 65, y1: 25, x2: 225, y2: 70, gradientUnits: 'userSpaceOnUse' },
+          h('stop', { stopColor: '#777dff' }), h('stop', { offset: .5, stopColor: '#b38cf4' }), h('stop', { offset: 1, stopColor: '#f1a7da' })),
+        h('filter', { id: `${id}-glow`, x: '-30%', y: '-50%', width: '160%', height: '200%' }, h('feGaussianBlur', { stdDeviation: 2.2 }))),
+      h('path', { d: 'M14 3h212a11 11 0 0 1 11 11v116a11 11 0 0 1-11 11h-53l-6 4H73l-6-4H14a11 11 0 0 1-11-11V14A11 11 0 0 1 14 3Z', fill: '#202039', stroke: '#b19ad7', strokeOpacity: .32 }),
+      h('rect', { x: 10, y: 10, width: 220, height: 74, rx: 5, fill: '#28243f' }),
+      h('svg', { x: 11, y: 11, width: 218, height: 72, viewBox: '11 11 218 72', overflow: 'hidden' },
+        h('g', { fill: `url(#${id}-tone)`, filter: `url(#${id}-glow)`, opacity: .7 }, ...dots),
+        h('g', { fill: `url(#${id}-tone)` }, ...dots)),
+      h('path', { d: 'M19 19h35M19 22h21', stroke: '#dbc6e6', strokeWidth: .65, opacity: .55 }),
+      h('text', { x: 19, y: 58, fill: '#dbc6e6', fontSize: 28, fontWeight: 300, fontFamily: 'ui-monospace, monospace', letterSpacing: '-2' }, tape.number),
+      h('text', { x: 20, y: 73, fill: '#b19ad7', fontSize: 6, fontFamily: 'ui-monospace, monospace', letterSpacing: 1 }, 'DOTS'),
+      h('rect', { x: 28, y: 90, width: 184, height: 33, rx: 16.5, fill: '#151523', stroke: '#b19ad7', strokeWidth: .55, strokeOpacity: .3 }),
+      h('path', { d: 'M76 92h88M76 121h88', stroke: '#dbc6e6', strokeWidth: .55, opacity: .22 }),
       ...[76, 164].map(cx => h('g', { key: cx },
-        h('circle', { cx, cy: 106.5, r: 14.5, fill: ink, stroke: accent, strokeWidth: .75, strokeOpacity: .55 }),
-        h('circle', { cx, cy: 106.5, r: 9, fill: body, stroke: paper, strokeWidth: 2.5, strokeOpacity: .68 }),
-        ...Array.from({ length: 6 }, (_, i) => h('path', { key: i, d: `M${cx} 96v4`, stroke: body, strokeWidth: 2.5, transform: `rotate(${i * 60} ${cx} 106.5)` })),
-        h('circle', { cx, cy: 106.5, r: 3.1, fill: '#10171e' }))),
-      h('path', { d: 'M111 102h18v9h-18z', fill: ink, stroke: accent, strokeWidth: .5, strokeOpacity: .3 }),
-      h('path', { d: 'm87 141 6-12h54l6 12', stroke: accent, strokeWidth: .65, opacity: .32 }),
-      ...[[15, 91], [225, 91], [15, 131], [225, 131]].map(([cx, cy]) => h('g', { key: `${cx}-${cy}`, opacity: .4 },
-        h('circle', { cx, cy, r: 2, stroke: accent, strokeWidth: .6 }),
-        h('path', { d: `M${cx - 1} ${cy}h2`, stroke: accent, strokeWidth: .5 }))),
-      h('text', { x: 20, y: 113, fill: paper, fontSize: 6, fontFamily: 'ui-monospace, monospace', opacity: .65 }, 'A'));
+        h('circle', { cx, cy: 106.5, r: 14.5, fill: '#28243f', stroke: '#b19ad7', strokeWidth: .75, strokeOpacity: .55 }),
+        h('circle', { cx, cy: 106.5, r: 9, fill: '#202039', stroke: '#dbc6e6', strokeWidth: 2.5, strokeOpacity: .68 }),
+        ...Array.from({ length: 6 }, (_, i) => h('path', { key: i, d: `M${cx} 96v4`, stroke: '#202039', strokeWidth: 2.5, transform: `rotate(${i * 60} ${cx} 106.5)` })),
+        h('circle', { cx, cy: 106.5, r: 3.1, fill: '#151523' }))),
+      h('path', { d: 'M111 102h18v9h-18z', fill: '#28243f', stroke: '#b19ad7', strokeWidth: .5, strokeOpacity: .3 }),
+      h('path', { d: 'm87 141 6-12h54l6 12', stroke: '#b19ad7', strokeWidth: .65, opacity: .32 }),
+      ...[[15, 91], [225, 91], [15, 131], [225, 131]].map(([cx, cy]) => h('circle', { key: `${cx}-${cy}`, cx, cy, r: 2, stroke: '#b19ad7', strokeWidth: .6, opacity: .4 })));
   };
 }
 
@@ -1147,291 +616,138 @@ const DECK_CSS = `
 .tape-deck{width:100%;min-width:0;color:var(--dsw-alias-label-primary);font:inherit;container-type:inline-size;line-height:1.5}
 .tape-deck *,.tape-deck *::before,.tape-deck *::after{box-sizing:border-box}
 .tape-deck h2,.tape-deck h3,.tape-deck p{margin:0}
-.tape-deck button,.tape-deck input{font:inherit}
-.tape-deck button{cursor:pointer;-webkit-tap-highlight-color:transparent}
-.tape-deck button:disabled,.tape-deck input:disabled{opacity:.45;cursor:not-allowed}
-.tape-deck button:focus-visible,.tape-deck input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:4px}
+.tape-deck button{font:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.tape-deck button:disabled{opacity:.5;cursor:not-allowed}
+.tape-deck button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:4px}
 .tape-deck-header{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:2px 2px 23px}
 .tape-deck-brand{display:flex;gap:12px;align-items:center;min-width:0}
 .tape-deck-mark{width:34px;height:34px;flex:none;color:var(--dsw-alias-label-secondary)}
 .tape-deck-title{font-size:24px;font-weight:530;letter-spacing:-.045em;line-height:1.3}
 .tape-deck-tagline{font-size:12px;color:var(--dsw-alias-label-secondary);margin-top:5px!important}
 .tape-deck-power{display:flex;align-items:center;gap:9px;background:none;border:0;color:var(--dsw-alias-label-secondary);padding:8px 0 8px 8px;font-size:11px!important;flex:none}
-.tape-deck-switch{display:block;width:29px;height:17px;padding:3px;border-radius:20px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);transition:background .15s}
-.tape-deck-switch::after{content:'';display:block;width:9px;height:9px;border-radius:50%;background:var(--dsw-alias-label-secondary);transition:transform .15s}
+.tape-deck-switch{display:block;width:29px;height:17px;padding:3px;border-radius:20px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2)}
+.tape-deck-switch::after{content:'';display:block;width:9px;height:9px;border-radius:50%;background:var(--dsw-alias-label-secondary)}
 .tape-deck-power[aria-checked=true] .tape-deck-switch{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 16%,var(--dsw-alias-bg-base))}
 .tape-deck-power[aria-checked=true] .tape-deck-switch::after{transform:translateX(12px);background:var(--dsw-alias-brand-primary)}
 .tape-deck-player{border:1px solid var(--dsw-alias-border-l1);border-radius:20px;overflow:hidden;background:var(--dsw-alias-bg-base)}
-.tape-deck-stage{position:relative;isolation:isolate;height:clamp(238px,34vh,340px);overflow:hidden}
+.tape-deck-stage{position:relative;isolation:isolate;height:clamp(270px,38vh,370px);overflow:hidden}
 .tape-deck-surface{position:absolute;inset:0}
 .tape-deck-stage-top{position:absolute;z-index:1;top:17px;left:19px;right:19px;display:flex;align-items:center;justify-content:space-between;gap:10px;pointer-events:none}
 .tape-deck-badges{display:flex;flex-wrap:wrap;gap:6px}
-.tape-deck-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:20px;background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 88%,transparent);font-size:10px;line-height:1.4;color:var(--dsw-alias-label-secondary)}
-.tape-deck-badge[data-kind=preview]{color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 28%,var(--dsw-alias-border-l1))}
-.tape-deck-badge[data-kind=playing]::before{content:'';width:4px;height:4px;border-radius:50%;background:var(--dsw-alias-state-success-primary)}
-.tape-deck-serial{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary);white-space:nowrap;padding:3px 5px;background:color-mix(in srgb,var(--dsw-alias-bg-base) 65%,transparent);border-radius:4px}
+.tape-deck-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:20px;background:color-mix(in srgb,var(--dsw-alias-bg-overlay) 88%,transparent);font-size:10px;color:var(--dsw-alias-label-secondary)}
+.tape-deck-badge[data-preview=true]{color:var(--dsw-alias-brand-primary)}
+.tape-deck-serial{font:10px ui-monospace,monospace;color:var(--dsw-alias-label-secondary);padding:3px 5px;background:color-mix(in srgb,var(--dsw-alias-bg-base) 65%,transparent);border-radius:4px}
 .tape-deck-stage-caption{position:absolute;inset:auto 0 0;z-index:1;pointer-events:none;padding:42px 22px 20px;background:linear-gradient(transparent,color-mix(in srgb,var(--dsw-alias-bg-base) 92%,transparent))}
 .tape-deck-mood{font-size:9px;letter-spacing:.13em;color:var(--dsw-alias-label-secondary);margin-bottom:7px!important}
 .tape-deck-current-title{font-size:23px;font-weight:500;letter-spacing:-.035em;line-height:1.3}
 .tape-deck-current-subtitle{font-size:12px;color:var(--dsw-alias-label-secondary);margin-top:6px!important;max-width:52ch}
-.tape-deck-touch{position:absolute;top:40%;left:18px;right:18px;text-align:center;pointer-events:none;font-size:10px;letter-spacing:.025em;color:var(--dsw-alias-label-secondary);opacity:.7}
-.tape-deck-transport{position:relative;z-index:2;display:flex;align-items:center;gap:20px;padding:16px 21px;border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
+.tape-deck-touch{position:absolute;top:40%;left:18px;right:18px;text-align:center;pointer-events:none;font-size:10px;color:var(--dsw-alias-label-secondary);opacity:.7}
+.tape-deck-transport{display:flex;align-items:center;gap:20px;padding:16px 21px;border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
 .tape-deck-transport-copy{flex:1;min-width:0}
 .tape-deck-status{font-size:11px;color:var(--dsw-alias-label-secondary)}
-.tape-deck-status[data-unsaved=true]{color:var(--dsw-alias-brand-primary)}
 .tape-deck-action-hint{margin-top:4px!important;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.65;max-width:60ch}
-.tape-deck-insert{display:inline-flex;justify-content:center;align-items:center;gap:9px;min-height:39px;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 42%,var(--dsw-alias-border-l2));background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-primary);border-radius:10px;padding:8px 16px;font-size:12px!important;font-weight:550;white-space:nowrap;transition:background .15s,border-color .15s}
-.tape-deck-insert:not(:disabled):hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 20%,var(--dsw-alias-bg-layer-1));border-color:var(--dsw-alias-brand-primary)}
-.tape-deck-insert:disabled{opacity:.6}
-.tape-deck-insert svg{width:14px;height:14px;flex:none}
-.tape-deck-tuning{padding:15px 2px 22px}
-.tape-deck-tune-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.tape-deck-tune-label{font-size:10px;letter-spacing:.035em;color:var(--dsw-alias-label-secondary);margin-right:3px}
-.tape-deck-knob{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:30px;padding:5px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-base);font-size:11px!important;transition:border-color .15s,color .15s}
-.tape-deck-knob:hover,.tape-deck-knob[aria-expanded=true]{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1)}
-.tape-deck-knob[aria-expanded=true]{border-color:var(--dsw-alias-brand-primary)}
-.tape-deck-knob-dot{width:11px;height:11px;display:block;border:1px solid currentColor;border-radius:50%;position:relative;opacity:.75}
-.tape-deck-knob-dot::after{content:'';position:absolute;left:4px;top:1px;width:1px;height:4px;background:currentColor;transform:rotate(30deg);transform-origin:bottom}
-.tape-deck-reset{margin-left:auto;min-height:30px;border:0;padding:5px 3px 5px 9px;background:none;color:var(--dsw-alias-label-secondary);font-size:10px!important;text-decoration:underline;text-decoration-color:var(--dsw-alias-border-l2);text-underline-offset:4px}
-.tape-deck-control{width:min(100%,390px);margin-top:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-overlay);padding:14px 16px;box-shadow:0 8px 24px color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent);animation:tape-deck-reveal .12s ease-out}
-.tape-deck-control-heading{display:flex;align-items:center;gap:12px;margin-bottom:6px}
-.tape-deck-control-heading label{font-size:12px;font-weight:550;flex:1}
-.tape-deck-value{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary)}
-.tape-deck-close{display:grid;place-items:center;width:26px;height:26px;border:0;background:none;color:var(--dsw-alias-label-secondary);padding:4px;border-radius:6px}
-.tape-deck-close:hover{background:var(--dsw-alias-bg-layer-2)}
-.tape-deck-close svg{width:13px;height:13px}
-.tape-deck-control-hint{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.6;margin-bottom:11px!important}
-.tape-deck-range{display:block;width:100%;min-width:0;height:26px;appearance:none;-webkit-appearance:none;cursor:pointer;background:none;margin:0;padding:0;accent-color:var(--dsw-alias-brand-primary)}
-.tape-deck-range::-webkit-slider-runnable-track{height:3px;border-radius:4px;background:linear-gradient(to right,var(--dsw-alias-brand-primary) var(--deck-progress),var(--dsw-alias-border-l2) var(--deck-progress))}
-.tape-deck-range::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:13px;height:13px;margin-top:-5px;border-radius:50%;border:2px solid var(--dsw-alias-bg-overlay);background:var(--dsw-alias-brand-primary);box-shadow:0 0 0 1px var(--dsw-alias-brand-primary)}
-.tape-deck-range::-moz-range-track{height:3px;border-radius:4px;background:var(--dsw-alias-border-l2)}
-.tape-deck-range::-moz-range-progress{height:3px;border-radius:4px;background:var(--dsw-alias-brand-primary)}
-.tape-deck-range::-moz-range-thumb{width:10px;height:10px;border-radius:50%;border:2px solid var(--dsw-alias-bg-overlay);background:var(--dsw-alias-brand-primary);box-shadow:0 0 0 1px var(--dsw-alias-brand-primary)}
-.tape-deck-range-ends{display:flex;justify-content:space-between;gap:10px;color:var(--dsw-alias-label-secondary);font-size:10px}
-.tape-deck-hex{display:block;width:100%;max-width:170px;min-height:34px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:7px;padding:6px 10px;font:12px ui-monospace,SFMono-Regular,Consolas,monospace!important}
-.tape-deck-hex[aria-invalid=true]{border-color:var(--dsw-alias-state-error-primary)}
-.tape-deck-drawer{position:relative;border:1px solid var(--dsw-alias-border-l1);border-radius:20px;background:var(--dsw-alias-bg-layer-1);padding:25px 20px 17px;box-shadow:inset 0 5px 12px color-mix(in srgb,var(--dsw-alias-label-primary) 2%,transparent)}
+.tape-deck-insert{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:39px;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 42%,var(--dsw-alias-border-l2));background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-primary);border-radius:10px;padding:8px 16px;font-size:12px!important;font-weight:550;white-space:nowrap}
+.tape-deck-insert:not(:disabled):hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 20%,var(--dsw-alias-bg-layer-1))}
+.tape-deck-insert svg{width:14px;height:14px}
+.tape-deck-drawer{position:relative;margin-top:20px;border:1px solid var(--dsw-alias-border-l1);border-radius:20px;background:var(--dsw-alias-bg-layer-1);padding:25px 20px 17px}
 .tape-deck-drawer::before{content:'';position:absolute;top:9px;left:calc(50% - 16px);width:32px;height:3px;border-radius:4px;background:var(--dsw-alias-border-l2)}
-.tape-deck-drawer-heading{display:flex;align-items:baseline;gap:10px;margin-bottom:4px}
 .tape-deck-drawer-title{font-size:14px;font-weight:550;letter-spacing:-.02em}
-.tape-deck-count{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}
-.tape-deck-drawer-subtitle{font-size:11px;color:var(--dsw-alias-label-secondary);margin-bottom:19px!important}
-.tape-deck-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-.tape-deck-card{display:block;text-align:left;min-width:0;width:100%;padding:10px 10px 11px;border:1px solid var(--dsw-alias-border-l1);border-radius:13px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);transition:transform .15s,border-color .15s,box-shadow .15s}
-.tape-deck-card:not(:disabled):hover{transform:translateY(-2px);border-color:var(--dsw-alias-border-l2);box-shadow:0 5px 14px color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent)}
-.tape-deck-card[aria-pressed=true]{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 1px color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent)}
+.tape-deck-drawer-subtitle{font-size:11px;color:var(--dsw-alias-label-secondary);margin:4px 0 19px!important}
+.tape-deck-grid{display:grid;grid-template-columns:minmax(0,1fr);width:100%;max-width:340px;margin:0 auto}
+.tape-deck-card{display:block;text-align:left;min-width:0;width:100%;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:13px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}
+.tape-deck-card:not(:disabled):hover{border-color:var(--dsw-alias-brand-primary)}
+.tape-deck-card[aria-pressed=true]{border-color:var(--dsw-alias-brand-primary)}
 .tape-deck-art{display:block;width:100%;height:auto;filter:drop-shadow(0 3px 3px color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent))}
-.tape-deck-card-copy{display:flex;align-items:baseline;gap:7px;margin:10px 3px 2px}
-.tape-deck-card-name{font-size:12px;font-weight:550;flex:1;min-width:0;line-height:1.4}
-.tape-deck-card-number{font:9px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}
-.tape-deck-card-meta{display:flex;justify-content:space-between;align-items:center;gap:6px;min-height:21px;margin:4px 3px 0;color:var(--dsw-alias-label-secondary);font-size:9px;line-height:1.5}
-.tape-deck-card-mood{overflow-wrap:anywhere;letter-spacing:.035em}
-.tape-deck-card-state{display:inline-flex;align-items:center;gap:4px;flex:none;color:var(--dsw-alias-label-secondary)}
-.tape-deck-card-state[data-preview=true]{color:var(--dsw-alias-brand-primary)}
-.tape-deck-card-state[data-playing=true]::before{content:'';width:3px;height:3px;background:var(--dsw-alias-state-success-primary);border-radius:50%}
-.tape-deck-drawer-note{margin-top:15px!important;font-size:10px;color:var(--dsw-alias-label-secondary);line-height:1.7}
-.tape-deck-notice{margin:10px 2px 0!important;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.7;overflow-wrap:anywhere}
+.tape-deck-card-copy{display:flex;align-items:baseline;justify-content:space-between;gap:7px;margin:12px 3px 2px}
+.tape-deck-card-name{font-size:13px;font-weight:550;line-height:1.4}
+.tape-deck-card-number{font:10px ui-monospace,monospace;color:var(--dsw-alias-label-secondary)}
+.tape-deck-card-mood{display:block;margin:5px 3px 2px;color:var(--dsw-alias-label-secondary);font-size:10px;letter-spacing:.035em}
+.tape-deck-drawer-note{margin-top:15px!important;font-size:10px;text-align:center;color:var(--dsw-alias-label-secondary)}
+.tape-deck-notice{margin:10px 2px 0!important;color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}
 .tape-deck-error{color:var(--dsw-alias-state-error-primary)}
-@keyframes tape-deck-reveal{from{opacity:0;transform:translateY(-2px)}to{opacity:1;transform:none}}
-@container(min-width:940px){.tape-deck-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
-@container(max-width:500px){.tape-deck-header{gap:12px}.tape-deck-brand{gap:9px}.tape-deck-mark{width:27px;height:27px}.tape-deck-title{font-size:22px}.tape-deck-tagline{font-size:11px}.tape-deck-power-label{display:none}.tape-deck-transport{padding:14px 16px;gap:12px}.tape-deck-action-hint{font-size:10px}.tape-deck-insert{padding:8px 12px}.tape-deck-drawer{padding:25px 14px 15px}.tape-deck-grid{gap:10px}.tape-deck-card{padding:7px}.tape-deck-card-name{font-size:11px}.tape-deck-card-meta{display:block}.tape-deck-card-state{min-height:15px}.tape-deck-card-copy{margin-top:8px}}
-@container(max-width:359px){.tape-deck-header{align-items:flex-start;padding-bottom:17px}.tape-deck-brand{gap:8px}.tape-deck-mark{width:22px;height:22px;margin-top:3px}.tape-deck-title{font-size:21px}.tape-deck-tagline{font-size:10px;max-width:22ch}.tape-deck-power{padding-top:5px}.tape-deck-stage{height:250px}.tape-deck-stage-top{left:13px;right:13px;top:13px}.tape-deck-stage-caption{padding:42px 16px 17px}.tape-deck-current-title{font-size:21px}.tape-deck-current-subtitle{font-size:11px}.tape-deck-transport{align-items:stretch;flex-direction:column;gap:11px}.tape-deck-insert{width:100%}.tape-deck-grid{grid-template-columns:minmax(0,1fr)}.tape-deck-card{padding:10px}.tape-deck-card-name{font-size:13px}.tape-deck-card-meta{display:flex}.tape-deck-tune-label{width:100%;margin-bottom:2px}.tape-deck-reset{margin-left:0;padding-left:3px}.tape-deck-knob{padding:5px 8px}.tape-deck-serial{font-size:9px}}
-@media(prefers-reduced-motion:reduce){.tape-deck *,.tape-deck *::before,.tape-deck *::after{animation:none!important;transition:none!important}.tape-deck-card:not(:disabled):hover{transform:none}}
+@container(max-width:500px){.tape-deck-header{gap:12px}.tape-deck-brand{gap:9px}.tape-deck-mark{width:27px;height:27px}.tape-deck-title{font-size:22px}.tape-deck-tagline{font-size:11px}.tape-deck-power-label{display:none}.tape-deck-drawer{padding:25px 14px 15px}}
+@container(max-width:359px){.tape-deck-header{align-items:flex-start}.tape-deck-mark{width:22px;height:22px;margin-top:3px}.tape-deck-title{font-size:20px}.tape-deck-tagline{font-size:10px;max-width:22ch}.tape-deck-stage{height:280px}.tape-deck-stage-top{left:13px;right:13px}.tape-deck-stage-caption{padding:42px 16px 17px}.tape-deck-current-subtitle{font-size:11px}.tape-deck-transport{align-items:stretch;flex-direction:column;gap:11px;padding:14px 16px}.tape-deck-insert{width:100%}}
 `;
 
-/** One real Surface, local audition state, and an explicit single-patch commit. */
+/** One real Surface, a fixed preset, and explicit application without parameter controls. */
 function createDeckPage({ React, ctx, model, t, Surface }) {
-  const h = React.createElement;
-  const Artwork = createTapeArtwork(React);
+  const h = React.createElement, Artwork = createTapeArtwork(React);
   const text = key => t(`deck.${key}`);
-  const subscribeLocale = listener => ctx.locale.subscribe(listener);
-  const getLocale = () => ctx.locale.getSnapshot();
-  const icon = (kind, props = {}) => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
-    strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false, ...props },
-    kind === 'mark' ? h(React.Fragment, null,
-      h('rect', { x: 2.5, y: 5, width: 19, height: 14, rx: 3 }),
-      h('circle', { cx: 8, cy: 12, r: 2.5 }), h('circle', { cx: 16, cy: 12, r: 2.5 }),
-      h('path', { d: 'M8 9.5h8M8 14.5h8M8 19l1.5-3h5l1.5 3' }))
-      : h('path', { d: kind === 'close' ? 'm7 7 10 10M17 7 7 17' : kind === 'check' ? 'm5 12 4 4L19 6' : 'M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4' }));
-
+  const subscribeLocale = listener => ctx.locale.subscribe(listener), getLocale = () => ctx.locale.getSnapshot();
+  const tape = CASSETTES[0], params = tape.defaults;
+  const icon = kind => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5,
+    strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false, className: kind === 'mark' ? 'tape-deck-mark' : undefined },
+    kind === 'mark' ? h(React.Fragment, null, h('rect', { x: 2.5, y: 5, width: 19, height: 14, rx: 3 }),
+      h('circle', { cx: 8, cy: 12, r: 2.5 }), h('circle', { cx: 16, cy: 12, r: 2.5 }), h('path', { d: 'M8 9.5h8M8 14.5h8' }))
+      : h('path', { d: kind === 'check' ? 'm5 12 4 4L19 6' : 'M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4' }));
   return function DeckPage() {
     const snapshot = React.useSyncExternalStore(model.subscribe, model.getSnapshot, model.getSnapshot);
     React.useSyncExternalStore(subscribeLocale, getLocale, getLocale);
-    const lang = text('locale') === 'zh' ? 'zh' : 'en';
-    const settings = snapshot.settings;
-    // A null draft follows remote settings. Once edited, it is never replaced by a remote update.
-    const [editor, setEditor] = React.useState({ id: null, draft: null, base: null });
-    const [active, setActive] = React.useState(null);
-    const [colorText, setColorText] = React.useState('');
-    const [notice, setNotice] = React.useState('');
-    const [localError, setLocalError] = React.useState('');
-    const [previewError, setPreviewError] = React.useState(null);
-    const [pending, setPending] = React.useState(null);
-    const controlInput = React.useRef(null);
-    const controlButtons = React.useRef({});
+    const lang = text('locale') === 'zh' ? 'zh' : 'en', settings = snapshot.settings;
+    const [audition, setAudition] = React.useState(false), [pending, setPending] = React.useState(false);
+    const [localError, setLocalError] = React.useState(''), [previewError, setPreviewError] = React.useState(false);
     const id = React.useId();
-    const selected = getCassette(editor.id || settings.cassette);
-    const persisted = React.useMemo(() => deckParams(settings, selected.id), [settings, selected.id]);
-    const params = editor.draft || persisted;
-    const persistedSignature = signature(persisted);
-    const draftSignature = signature(params);
-    const dirty = draftSignature !== persistedSignature;
-    const isCurrent = selected.id === settings.cassette;
-    const audition = !isCurrent || dirty;
-    const remoteConflict = editor.draft && editor.base !== persistedSignature && dirty;
-    const editDisabled = !snapshot.loaded || snapshot.saving;
-    const saveDisabled = !snapshot.loaded || !snapshot.writable || snapshot.saving;
-    const invalidColor = active === 'tint' && !validTint(colorText);
-    const control = selected.controls.find(([key]) => key === active);
-    const controls = [['tint'], ...selected.controls];
-    const changePending = !!pending || snapshot.saving;
-    const canInsert = !saveDisabled && !invalidColor && (!isCurrent || dirty || !!snapshot.error || !!localError);
-    const hasPreviewError = previewError === selected.id;
-    const onSurfaceError = React.useCallback(() => setPreviewError(selected.id), [selected.id]);
-
-    React.useEffect(() => { setActive(null); }, [selected.id]);
-    React.useEffect(() => {
-      if (active) controlInput.current?.focus({ preventScroll: true });
-    }, [active]);
-    // A failed optimistic save must retain the preview for retry. Clear it only after acknowledgement.
-    // Dependencies are stable primitives (plus the finite pending transaction), not new params objects.
+    const applied = settings.cassette === tape.id && signature(getCassetteParams(settings, tape.id)) === signature(params);
+    const preview = audition || !applied, busy = pending || snapshot.saving;
+    const saveDisabled = !snapshot.loaded || !snapshot.writable || busy;
+    const error = snapshot.error || localError;
+    const canInsert = !saveDisabled && (preview || !!error);
     React.useEffect(() => {
       if (!pending || snapshot.saving) return;
-      setPending(null);
-      if (!snapshot.error && settings.cassette === pending.id && persistedSignature === pending.signature) {
-        setEditor(previous => previous.id === pending.id && previous.draft && signature(previous.draft) === pending.signature
-          ? { id: previous.id, draft: null, base: null } : previous);
-      }
-    }, [pending, snapshot.saving, snapshot.error, settings.cassette, persistedSignature]);
-
-    function closeControl(returnFocus = false) {
-      setActive(null);
-      if (returnFocus) controlButtons.current[active]?.focus({ preventScroll: true });
-    }
-    function updateDraft(patch) {
-      setEditor({ id: selected.id, draft: { ...params, ...patch }, base: editor.base || persistedSignature });
-      setNotice('');
-      setLocalError('');
-    }
-    function choose(tape) {
-      if (editDisabled || tape.id === selected.id) return;
-      setNotice(dirty ? 'discarded' : '');
-      setEditor({ id: tape.id, draft: null, base: null });
-      setActive(null);
-      setLocalError('');
-      setPreviewError(null);
-    }
+      setPending(false);
+      if (!snapshot.error && applied) setAudition(false);
+    }, [pending, snapshot.saving, snapshot.error, applied]);
     function insert() {
       const latest = model.getSnapshot();
       if (!canInsert || !latest.loaded || !latest.writable || latest.saving) return;
-      setEditor({ id: selected.id, draft: { ...params }, base: persistedSignature });
-      setPending({ id: selected.id, signature: draftSignature });
-      setNotice('');
-      setLocalError('');
-      try {
-        // Preserve unrelated cassettes and the current global power state from the latest snapshot.
-        model.update(cassettePatch(latest.settings, selected.id, params));
-      } catch (error) {
-        setPending(null);
-        setLocalError(error instanceof Error ? error.message : String(error));
-      }
+      setPending(true); setLocalError('');
+      try { model.update(cassettePatch(latest.settings, tape.id, params)); }
+      catch (error) { setPending(false); setLocalError(error instanceof Error ? error.message : String(error)); }
     }
-    const badge = audition ? 'preview' : settings.enabled ? 'playing' : 'paused';
-    const actionHint = !settings.enabled ? 'offHint' : dirty ? 'draftHint' : !isCurrent ? 'auditionHint' : 'playingHint';
-    const status = !snapshot.loaded ? 'loading' : changePending ? 'saving' : !snapshot.writable ? 'readOnly'
-      : snapshot.error || localError ? 'saveError' : dirty ? 'unsaved' : audition ? 'preview' : 'saved';
-    const controlId = `${id}-control`;
-    return h('section', { 'data-background-deck':true, className: 'tape-deck', 'aria-labelledby': `${id}-title`, 'aria-busy': !snapshot.loaded || snapshot.saving,
-      onKeyDown: event => { if (event.key === 'Escape' && active) { event.preventDefault(); event.stopPropagation(); closeControl(true); } },
-      onBlur: event => { if (active && event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setActive(null); } },
+    const status = !snapshot.loaded ? 'loading' : busy ? 'saving' : !snapshot.writable ? 'readOnly' : error ? 'saveError' : preview ? 'preview' : 'saved';
+    const state = preview ? 'preview' : settings.enabled ? 'playing' : 'inserted';
+    return h('section', { 'data-background-deck': true, className: 'tape-deck', 'aria-labelledby': `${id}-title`, 'aria-busy': !snapshot.loaded || busy },
       h('style', null, DECK_CSS),
       h('header', { className: 'tape-deck-header' },
-        h('div', { className: 'tape-deck-brand' }, icon('mark', { className: 'tape-deck-mark' }),
-          h('div', null, h('h2', { id: `${id}-title`, className: 'tape-deck-title' }, text('title')),
-            h('p', { className: 'tape-deck-tagline' }, text('tagline')))),
+        h('div', { className: 'tape-deck-brand' }, icon('mark'), h('div', null,
+          h('h2', { id: `${id}-title`, className: 'tape-deck-title' }, text('title')), h('p', { className: 'tape-deck-tagline' }, text('tagline')))),
         h('button', { type: 'button', className: 'tape-deck-power', role: 'switch', 'aria-checked': !!settings.enabled,
-          'aria-label': text(settings.enabled ? 'disable' : 'enable'), title: text(settings.enabled ? 'disable' : 'enable'), disabled: saveDisabled,
+          'aria-label': text(settings.enabled ? 'disable' : 'enable'), disabled: saveDisabled,
           onClick: () => { const latest = model.getSnapshot(); if (latest.loaded && latest.writable && !latest.saving) model.update({ enabled: !latest.settings.enabled }); } },
-          h('span', { className: 'tape-deck-power-label' }, text('background')),
-          h('span', { className: 'tape-deck-switch', 'aria-hidden': true }))),
+          h('span', { className: 'tape-deck-power-label' }, text('background')), h('span', { className: 'tape-deck-switch', 'aria-hidden': true }))),
       h('div', { className: 'tape-deck-player' },
         h('div', { className: 'tape-deck-stage', role: 'group', 'aria-label': text('previewLabel') },
-          h('div', { className: 'tape-deck-surface' }, snapshot.loaded
-            ? h(Surface, { key: selected.id, cassette: selected.id, params, enabled: true, preview: true, onError: onSurfaceError, onReady: () => setPreviewError(null) }) : null),
-          h('div', { className: 'tape-deck-stage-top' },
-            h('div', { className: 'tape-deck-badges' },
-              h('span', { className: 'tape-deck-badge', 'data-kind': audition ? 'preview' : settings.enabled ? 'playing' : 'paused' }, text(snapshot.loaded ? badge : 'loading')),
-              !settings.enabled ? h('span', { className: 'tape-deck-badge' }, text('previewOnly')) : null),
-            h('span', { className: 'tape-deck-serial', 'aria-hidden': true }, `${selected.number} / ${String(CASSETTES.length).padStart(2, '0')}`)),
-          !hasPreviewError && snapshot.loaded ? h('p', { className: 'tape-deck-touch' }, text('touch')) : null,
-          h('div', { className: 'tape-deck-stage-caption' },
-            h('p', { className: 'tape-deck-mood' }, selected.mood[lang]),
-            h('h3', { className: 'tape-deck-current-title' }, selected.name[lang]),
-            h('p', { className: 'tape-deck-current-subtitle' }, selected.subtitle[lang]))),
-        h('div', { className: 'tape-deck-transport' },
-          h('div', { className: 'tape-deck-transport-copy' },
-            h('p', { className: 'tape-deck-status', role: 'status', 'aria-live': 'polite', 'data-unsaved': dirty && !changePending }, text(status)),
-            h('p', { id: `${id}-apply-hint`, className: 'tape-deck-action-hint' }, text(actionHint))),
+          h('div', { className: 'tape-deck-surface' }, snapshot.loaded ? h(Surface, { key: tape.id, cassette: tape.id, params,
+            enabled: true, preview: true, displayOpacity: 1, onError: () => setPreviewError(true), onReady: () => setPreviewError(false) }) : null),
+          h('div', { className: 'tape-deck-stage-top' }, h('div', { className: 'tape-deck-badges' },
+            h('span', { className: 'tape-deck-badge', 'data-preview': preview }, text(snapshot.loaded ? state : 'loading')),
+            !settings.enabled ? h('span', { className: 'tape-deck-badge' }, text('previewOnly')) : null),
+            h('span', { className: 'tape-deck-serial', 'aria-hidden': true }, '01 / 01')),
+          snapshot.loaded && !previewError ? h('p', { className: 'tape-deck-touch' }, text('touch')) : null,
+          h('div', { className: 'tape-deck-stage-caption' }, h('p', { className: 'tape-deck-mood' }, tape.mood[lang]),
+            h('h3', { className: 'tape-deck-current-title' }, tape.name[lang]), h('p', { className: 'tape-deck-current-subtitle' }, tape.subtitle[lang]))),
+        h('div', { className: 'tape-deck-transport' }, h('div', { className: 'tape-deck-transport-copy' },
+          h('p', { className: 'tape-deck-status', role: 'status', 'aria-live': 'polite' }, text(status)),
+          h('p', { id: `${id}-apply-hint`, className: 'tape-deck-action-hint' }, text(!settings.enabled ? 'offHint' : preview ? 'auditionHint' : 'playingHint'))),
           h('button', { type: 'button', className: 'tape-deck-insert', disabled: !canInsert, onClick: insert, 'aria-describedby': `${id}-apply-hint` },
-            icon(isCurrent && !dirty && !snapshot.error && !localError ? 'check' : 'insert'),
-            text(changePending ? 'saving' : isCurrent && !dirty && !snapshot.error && !localError ? settings.enabled ? 'playing' : 'inserted' : 'insert')))),
-      h('div', { className: 'tape-deck-tuning', role: 'group', 'aria-label': text('tune'), title: text('tuneHint') },
-        h('div', { className: 'tape-deck-tune-row' },
-          h('span', { className: 'tape-deck-tune-label' }, text('tune')),
-          ...controls.map(([key]) => h('button', { key, ref: node => { controlButtons.current[key] = node; }, type: 'button', className: 'tape-deck-knob',
-            'aria-expanded': active === key, 'aria-controls': active === key ? controlId : undefined, 'aria-label': text(key), disabled: editDisabled,
-            onClick: () => { if (active === key) closeControl(); else { if (key === 'tint') setColorText(params.tint); setActive(key); } } },
-            h('span', { className: 'tape-deck-knob-dot', 'aria-hidden': true }), text(key))),
-          h('button', { type: 'button', className: 'tape-deck-reset', disabled: editDisabled, title: text('resetHint'),
-            onClick: () => { const { enabled: _enabled, ...defaults } = selected.defaults; setEditor({ id: selected.id, draft: { ...defaults }, base: persistedSignature }); setActive(null); setNotice('resetNotice'); setLocalError(''); } }, text('reset'))),
-        active ? h('div', { key: active, id: controlId, className: 'tape-deck-control', role: 'group', 'aria-labelledby': `${id}-control-label` },
-          h('div', { className: 'tape-deck-control-heading' },
-            h('label', { id: `${id}-control-label`, htmlFor: `${id}-input` }, text(active)),
-            active !== 'tint' ? h('output', { className: 'tape-deck-value', htmlFor: `${id}-input` }, Number(params[active]).toFixed(2)) : null,
-            h('button', { type: 'button', className: 'tape-deck-close', 'aria-label': text('close'), title: text('close'), onClick: () => closeControl(true) }, icon('close'))),
-          h('p', { id: `${id}-control-hint`, className: 'tape-deck-control-hint' }, text(`${active}Hint`)),
-          active === 'tint' ? h(React.Fragment, null,
-            h('input', { ref: controlInput, id: `${id}-input`, type: 'text', className: 'tape-deck-hex', value: colorText,
-              spellCheck: false, autoComplete: 'off', maxLength: 7, 'aria-invalid': invalidColor, 'aria-describedby': `${id}-control-hint${invalidColor ? ` ${id}-color-error` : ''}`, disabled: editDisabled,
-              onChange: event => { const value = event.target.value; setColorText(value); if (validTint(value)) updateDraft({ tint: value.toLowerCase() }); } }),
-            invalidColor ? h('p', { id: `${id}-color-error`, className: 'tape-deck-notice tape-deck-error', role: 'status' }, text('tintInvalid')) : null)
-            : control ? h(React.Fragment, null,
-              h('input', { ref: controlInput, id: `${id}-input`, type: 'range', className: 'tape-deck-range', min: control[1], max: control[2], step: control[3], value: params[active],
-                'aria-valuetext': Number(params[active]).toFixed(2), 'aria-describedby': `${id}-control-hint`, disabled: editDisabled,
-                style: { '--deck-progress': `${Math.max(0, Math.min(100, (params[active] - control[1]) / (control[2] - control[1]) * 100))}%` },
-                onChange: event => updateDraft({ [active]: Number(event.target.value) }) }),
-              h('div', { className: 'tape-deck-range-ends', 'aria-hidden': true }, h('span', null, text(`${active}Low`)), h('span', null, text(`${active}High`)))) : null) : null),
-      hasPreviewError ? h('p', { className: 'tape-deck-notice', role: 'status' }, text('previewError')) : null,
-      snapshot.error || localError ? h('div', { className: 'tape-deck-notice tape-deck-error', role: 'alert' },
-        h('p', null, text('saveError')), h('p', null, String(snapshot.error || localError))) : null,
-      remoteConflict ? h('p', { className: 'tape-deck-notice', role: 'status' }, text('remote')) : null,
-      notice ? h('p', { className: 'tape-deck-notice', role: 'status' }, text(notice)) : null,
+            icon(!preview && !error ? 'check' : 'insert'), text(busy ? 'saving' : !preview && !error ? state : 'insert')))),
+      previewError ? h('p', { className: 'tape-deck-notice', role: 'status' }, text('previewError')) : null,
+      error ? h('div', { className: 'tape-deck-notice tape-deck-error', role: 'alert' }, h('p', null, text('saveError')), h('p', null, String(error))) : null,
       h('section', { className: 'tape-deck-drawer', 'aria-labelledby': `${id}-drawer` },
-        h('div', { className: 'tape-deck-drawer-heading' },
-          h('h3', { id: `${id}-drawer`, className: 'tape-deck-drawer-title' }, text('drawer')),
-          h('span', { className: 'tape-deck-count', 'aria-hidden': true }, String(CASSETTES.length).padStart(2, '0'))),
+        h('h3', { id: `${id}-drawer`, className: 'tape-deck-drawer-title' }, text('drawer')),
         h('p', { className: 'tape-deck-drawer-subtitle' }, text('drawerHint')),
-        h('div', { className: 'tape-deck-grid' }, ...CASSETTES.map(tape => {
-          const selectedCard = tape.id === selected.id;
-          const installedCard = tape.id === settings.cassette;
-          const previewCard = selectedCard && audition;
-          const cardState = previewCard ? 'preview' : installedCard ? settings.enabled ? 'playing' : 'inserted' : null;
-          return h('button', { key: tape.id, type: 'button', className: 'tape-deck-card', 'aria-pressed': selectedCard, disabled: editDisabled,
-            'aria-label': `${text('choose')} ${tape.number} · ${tape.name[lang]}${cardState ? ` · ${text(cardState)}` : ''}`, onClick: () => choose(tape) },
-            h(Artwork, { tape }),
-            h('span', { className: 'tape-deck-card-copy' },
-              h('span', { className: 'tape-deck-card-name' }, tape.name[lang]), h('span', { className: 'tape-deck-card-number', 'aria-hidden': true }, tape.number)),
-            h('span', { className: 'tape-deck-card-meta' }, h('span', { className: 'tape-deck-card-mood' }, tape.mood[lang]),
-              h('span', { className: 'tape-deck-card-state', 'data-preview': previewCard, 'data-playing': installedCard && settings.enabled && !previewCard }, cardState ? text(cardState) : '\u00a0')));
-        })),
-        h('p', { className: 'tape-deck-drawer-note' }, text('chooseHint'))));
+        h('div', { className: 'tape-deck-grid' }, h('button', { type: 'button', className: 'tape-deck-card', 'aria-pressed': preview,
+          'aria-label': text('choose'), disabled: !snapshot.loaded || busy, onClick: () => setAudition(true) }, h(Artwork, { tape }),
+          h('span', { className: 'tape-deck-card-copy' }, h('span', { className: 'tape-deck-card-name' }, tape.name[lang]),
+            h('span', { className: 'tape-deck-card-number', 'aria-hidden': true }, tape.number)), h('span', { className: 'tape-deck-card-mood' }, tape.mood[lang]))),
+        h('p', { className: 'tape-deck-drawer-note' }, text('fixed'))));
   };
 }
 
 
 // The only DSH-specific compatibility seam. Effects never receive these selectors.
 const FRAME='.PIRFFq_frame';
-const SCOPE='.PIRFFq_frame:has(> [data-local-ocean-background="080"])';
+const SCOPE='.PIRFFq_frame:has(> [data-local-ocean-background="081"])';
 const backgroundCSS=`
 ${SCOPE}{isolation:isolate;background:var(--dsw-alias-bg-base)!important}
 ${SCOPE}>.PIRFFq_sidebarCol,${SCOPE}>.PIRFFq_centerCol,${SCOPE}>.PIRFFq_rightbarCol,${SCOPE}>.PIRFFq_bottomRow{position:relative;z-index:1}
@@ -1467,13 +783,13 @@ window.__ModuleLoader__.load({
           setTarget(candidate);
         },[]);
         return h(React.Fragment,null,
-          h('span',{hidden:true,ref:marker,'data-ocean-adapter':'0.8.0'}),
-          target?createPortal(h('div',{'data-local-ocean-background':settings.enabled&&!failed?'080':undefined,
+          h('span',{hidden:true,ref:marker,'data-ocean-adapter':'0.8.1'}),
+          target?createPortal(h('div',{'data-local-ocean-background':settings.enabled&&!failed?'081':undefined,
             'aria-hidden':true,style:{position:'absolute',inset:0,zIndex:0,pointerEvents:'none',overflow:'hidden'}},
             h('style',null,backgroundCSS),
             h(Surface,{key:cassette,cassette,params:getCassetteParams(settings),enabled:settings.enabled,preview:false,onError:()=>setFailed(true),onReady:()=>setFailed(false)})),target):null);
       }
-      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v080-r2',order:-100},Background));
+      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v081-dots-fixed',order:-100},Background));
     }};
   },
 });

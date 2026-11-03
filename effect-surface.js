@@ -3,7 +3,7 @@ import { createEffectRuntime } from './effect-runtime.js';
 /** The only browser adapter: cassettes receive pixels and values, never DSH or DOM events. */
 export function createEffectSurface(React, ctx) {
   const h=React.createElement;
-  return function EffectSurface({cassette,params,enabled=true,preview=false,onError,onReady}) {
+  return function EffectSurface({cassette,params,enabled=true,preview=false,displayOpacity,onError,onReady}) {
     const canvasRef=React.useRef(null), current=React.useRef({params,enabled,onError});
     const wake=React.useRef(()=>{});
     const [failure,setFailure]=React.useState('');
@@ -69,6 +69,7 @@ export function createEffectSurface(React, ctx) {
       pointerTarget.addEventListener('pointermove',pointer,{passive:true});
       pointerTarget.addEventListener('pointerdown',pointer,{passive:true});
       if(preview)canvas.addEventListener('pointerleave',leave,{passive:true});
+      else document.documentElement.addEventListener('pointerleave',leave,{passive:true});
       document.addEventListener('visibilitychange',visibility);
       window.addEventListener('blur',blur);window.addEventListener('focus',focus);
       motion.addEventListener('change',refresh);
@@ -80,12 +81,13 @@ export function createEffectSurface(React, ctx) {
         disposed=true;wake.current=()=>{};stop();runtime?.dispose();runtime=null;observer.disconnect();offTheme();
         pointerTarget.removeEventListener('pointermove',pointer);pointerTarget.removeEventListener('pointerdown',pointer);
         if(preview)canvas.removeEventListener('pointerleave',leave);
+        else document.documentElement.removeEventListener('pointerleave',leave);
         document.removeEventListener('visibilitychange',visibility);window.removeEventListener('blur',blur);window.removeEventListener('focus',focus);
         motion.removeEventListener('change',refresh);canvas.removeEventListener('webglcontextlost',lost);canvas.removeEventListener('webglcontextrestored',restored);
       };
     },[cassette,preview]);
     return h('div',{style:{position:'relative',width:'100%',height:'100%',overflow:'hidden'},'data-effect-surface':cassette},
-      h('canvas',{key:cassette,ref:canvasRef,'aria-hidden':true,style:{display:'block',width:'100%',height:'100%',opacity:enabled&&!failure?params.opacity:0,pointerEvents:preview?'auto':'none'}}),
-      preview&&failure?h('p',{role:'status',style:{position:'absolute',bottom:12,left:16,right:16,fontSize:11,color:'var(--dsw-alias-label-secondary)'}},ctx.locale.getSnapshot().active?.startsWith('zh')?'当前效果暂不可用，请切换其他磁带。':'This effect is unavailable. Try another tape.'):null);
+      h('canvas',{key:cassette,ref:canvasRef,'aria-hidden':true,style:{display:'block',width:'100%',height:'100%',opacity:enabled&&!failure?(displayOpacity??params.opacity):0,pointerEvents:preview?'auto':'none'}}),
+      preview&&failure?h('p',{role:'status',style:{position:'absolute',bottom:12,left:16,right:16,fontSize:11,color:'var(--dsw-alias-label-secondary)'}},ctx.locale.getSnapshot().active?.startsWith('zh')?'Dots 暂不可用，请重新打开设置或刷新页面。':'Dots is unavailable. Reopen settings or refresh the page.'):null);
   };
 }

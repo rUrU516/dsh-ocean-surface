@@ -1,41 +1,52 @@
-# 0.8.0 verification record
+# 0.8.1 verification record — Dots only
 
-Date: 2026-11-03 (Asia/Shanghai). Branch: `feat/cassette-deck`.
+Date: 2026-11-03 (Asia/Shanghai). Branch: `feat/cassette-deck`. This work does not change `main` or a formal Release.
 
-## Automated
+## Scope of this round
 
-- Generated the self-contained Client with `node build.js`.
-- Checked Client and Host JavaScript syntax.
-- **46 tests passed**: original ocean numerical stability/damping, appearance saving/error/read-only, cassette migration/independent memory/atomic writes, concurrent unrelated tape and power preservation, effect mathematics, idle scheduling, reduced motion, capped simulation steps, size budgets, disposal and failure containment.
-- Checked exported resource paths, original SVG XML/size, English and Chinese metadata, bilingual deck strings/control coverage, and whitespace errors.
-- No React/DOM/Canvas mock was used as evidence of visual success.
+- Only Dots (`dot-field`) remains in the catalog, UI and runtime.
+- Dots targets a dense blue-violet → pink-violet dot field, a broad magnifying lens and soft glow. This is an implementation direction, **not a claim of completed screenshot matching**.
+- The effect is a fixed preset. No user or Agent tuning, color editor, sliders or reset API remains.
+- One local tape module owns descriptor, normalizer and factory; runtime adaptation and browser scheduling remain separate. The final browser distribution remains one Client artifact, not runtime directory scanning or independent tape packages.
+- The deck retains one real audition surface, global power, a static original Dots SVG cover and explicit use. The audition passes `displayOpacity: 1`; the application background uses the fixed saved preset.
+- Retired effects do not run. Old values are inert Config compatibility data; `ocean_appearance` is removed.
 
-## Independent review and fixes
+## Current-round checks
 
-A read-only second-agent review found and prompted fixes for:
+### Deck / bilingual metadata
 
-1. Whole-drawer replacement could delete a concurrent unrelated tape change. Both callers now use the same nested path operation builder; regression tests preserve a remote ripple edit during pending dot-field insertion.
-2. Ocean insertion could overwrite a concurrent global power change. Tape insertion now omits global enable entirely.
-3. WebGL recovery did not clear parent failure markers. A first successful post-recovery frame now clears background and preview failure state.
-4. The preview root lacked its own event-isolation marker. It now declares it; moving into blocked UI sends pointer leave so a lens is not left behind.
-5. Model disposal during an in-flight mutation could drop trailing edits. A final queued batch is attempted after the in-flight batch settles.
+- `node --check deck-panel.js`: passed.
+- Imported `DECK_DICTS` / `createDeckPage`: exported factory exists; **26 English and Chinese deck keys match**, and each directly referenced deck key is present in both dictionaries.
+- Parsed both locale metadata files: `title` / `description` key parity passed; both descriptions identify only Dots.
+- Static assertions: one `Surface` creation, explicit `displayOpacity: 1`, no tuning/range/color controls and no retired artwork branches or four-tape copy.
+- `git diff --check`: passed at the end of this UI/documentation pass.
 
-The browser-specific recovery fixes are code-reviewed, not GPU-event-tested in a browser.
+These are source and language checks, not evidence of actual browser rendering.
 
-## Real DSH runtime
+### Build, automated tests and resources
 
-- Installed independent project directory through `plugin_manager`, version `0.8.0`, application `applied`, activation warnings empty. pnpm emits its general warning about peer dependencies on linked packages; the live Host schema and both tools activate successfully.
-- Live Config inspection exposes all legacy ocean fields plus additive cassette/cassetteSettings with validated nested numeric bounds.
-- Live Client Slots show the v080 background adapter active and the original settings section registration present. A later r2 identifier identifies the reviewed build.
-- Exercised real `background_tapes`: list, get, insert, update an inactive tape, reset an inactive tape, enable false/true. Writes returned accepted state, the active tape was not implicitly changed by inactive edits, and previous tape memories survived.
-- Disabled/re-enabled the plugin and read accepted state again to verify persistence across plugin lifecycle.
+- `node build.js`, `node --check client.js`, `node --check index.js`: passed.
+- `node --test *.test.js tapes/*.test.js`: **49/49 passed**. These include 16 Dots geometry/palette/idle/reduced-motion checks, 6 generic resource/size lifecycle checks, 5 fixed-cassette/configuration checks, and 22 retained legacy regressions. Legacy tests do not mean legacy renderers are active.
+- Explicit manifest resources exist; English/Chinese deck key parity passed. The generated artifact contains the v081 fixed-Dots adapter and no ocean renderer, WaterField class, ripple/contour draw routines or retired ocean tool.
+- Settings source contains one Surface and no range/color/tuning controls. Appearance is authored in the local tape defaults, not read from old customized parameters.
 
-The current demonstration tape is **Dot Field at its defaults**, enabled. This is an intentional switch for the new experience, not an accidental migration default. Legacy installations still migrate to ocean unless explicitly switched.
+### Real DSH installation and inspection
 
-At first real read in this verification pass, the saved ocean was `tint #ffffff`, brightness `1.57`, opacity `0.5`, waveStrength `2`, speed `0.45`, damping `0.74`, enabled true. These differed from an earlier conversation snapshot; the live settings were treated as authoritative and preserved, not rolled back to stale values.
+- The linked bundle inventory reports version **0.8.1** from the independent project directory. Disabled/re-enabled through `plugin_manager`; both operations returned `application: applied`, `warnings: []`.
+- Live Config inspection confirms the new defaults. Legacy numeric fields remain for inert compatibility only; the plugin opts out of auto-generated parameter forms.
+- Live Client registration **`local-background-tapes-adapter-v081-dots-fixed` is active**.
+- Real `background_tapes list` returns only Dots, `source: tapes/dots.js`, `fixed: true`; get/insert report the authored preset. Insertion and a same-value enable operation were accepted without changing global power (enabled true).
+- The running tool exposes only `list/get/insert/enable`; parameter update/reset and the retired ocean tool were removed from registration.
+- Current-process cached Client path was synchronized with the built artifact before reactivation; no profile composition was edited by hand.
 
-## Limitations
+## Historical context — 0.8.0, not this round
 
-No browser-control tool is available. We have not visually verified actual layout at 240px, light/dark contrast, rendered SVG appearance, GPU output, keyboard focus or context-loss recovery in the current GUI. Active slots and passing unit tests do not establish those results. No replacement web server, browser profile inspection, authentication bypass or screenshot dependency was used.
+The previous four-tape implementation recorded **46 tests passed** and an applied installation of 0.8.0. Its tests covered ocean numerics, appearance saving, cassette memory and atomic writes, effect mathematics and resource handling. Those results apply to that old source state only; they do not prove that the Dots-only fixed-preset rewrite builds, passes its tests or is installed.
 
-The DSH background-layout adapter is version-specific to `0.2.1-rc.5`, not an officially stable background extension point. The settings section and configuration APIs are public extension points.
+The old review also found and fixed whole-drawer replacement, accidental power overwrite, failure-marker recovery, preview event isolation and disposal-time pending writes. These are useful regression concerns, not newly executed 0.8.1 checks. The old ocean migration/default behavior and four-effect tool exercises are no longer current product behavior.
+
+## Verification limitations
+
+No browser-control tool is available in this pass. We have not visually verified current GUI layout at narrow widths, light/dark contrast, SVG appearance, the rendered dot density/gradient/glow, pointer-lens experience, keyboard focus or browser resource recovery. Active slots, syntax checks and unit tests do not establish these results. No substitute web server, mock React/DOM/Canvas renderer, personal browser inspection, authentication bypass or screenshot dependency is used as visual evidence.
+
+The background-layout adapter is version-specific to DSH `0.2.1-rc.5`, not an officially stable background extension point. The settings section and configuration APIs are public extension points.

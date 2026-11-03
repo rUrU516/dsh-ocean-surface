@@ -1,6 +1,6 @@
 // Bundle only our local modules; React and react-dom remain Host-provided.
 import { readFile, writeFile } from 'node:fs/promises';
-const modules = ['appearance.js', 'cassette-catalog.js', 'cassette-operations.js', 'appearance-model.js', 'water-field.js', 'ocean-renderer.js', 'effect-runtime.js', 'effect-surface.js', 'deck-panel.js', 'client-entry.js'];
+const modules = ['appearance.js', 'tapes/dots.js', 'cassette-registry.js', 'cassette-catalog.js', 'cassette-operations.js', 'appearance-model.js', 'effect-runtime.js', 'effect-surface.js', 'deck-panel.js', 'client-entry.js'];
 const sources = [];
 for (const name of modules) {
   const source = await readFile(new URL(name, import.meta.url), 'utf8');

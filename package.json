@@ -1,16 +1,16 @@
 {
   "name": "@local/dsh-cursor-ripples",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/rUrU516/dsh-ocean-surface.git"
   },
   "homepage": "https://github.com/rUrU516/dsh-ocean-surface#readme",
-  "description": "Background Tapes: a quiet interactive background deck with a cassette drawer, local auditioning and four built-in effects.",
+  "description": "Background Tapes: a fixed Dots cassette with a violet gradient, a soft glowing pointer lens, and no settings-panel parameter controls.",
   "scripts": {
     "build": "node build.js",
-    "test": "node --test *.test.js"
+    "test": "node --test *.test.js tapes/*.test.js"
   },
   "type": "module",
   "exports": {
@@ -23,9 +23,6 @@
     "index.js",
     "client.js",
     "client-entry.js",
-    "water-field.js",
-    "water-field.test.js",
-    "ocean-renderer.js",
     "build.js",
     "cordis.patch.yml",
     "locale/*.json",
@@ -34,9 +31,9 @@
     "appearance.js",
     "appearance-model.js",
     "appearance.test.js",
-    "ocean-preview.js",
-    "settings-panel.js",
-    "buoy-icons.js",
+    "cassette-registry.js",
+    "tapes/dots.js",
+    "tapes/dots.test.js",
     "cassette-catalog.js",
     "cassette-operations.js",
     "cassette-catalog.test.js",

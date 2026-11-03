@@ -1,73 +1,45 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CASSETTES, DECK_DEFAULTS, normalizeDeckSettings, getCassetteParams, cassettePatch, normalizeCassetteParams } from './cassette-catalog.js';
-import { createAppearanceModel, applySettingsOps } from './appearance-model.js';
-import { deckPatchOperations } from './cassette-operations.js';
-import { setTimeout as delay } from 'node:timers/promises';
+import {CASSETTES,DECK_DEFAULTS,normalizeDeckSettings,getCassetteParams,cassettePatch} from './cassette-catalog.js';
+import {createAppearanceModel,applySettingsOps} from './appearance-model.js';
+import {deckPatchOperations} from './cassette-operations.js';
+import {setTimeout as delay} from 'node:timers/promises';
 
-test('legacy ocean settings migrate without changing their appearance',()=>{
-  const old={enabled:true,tint:'#393c3c',brightness:1.54,opacity:.5,waveStrength:1,speed:.55,damping:.74};
-  const migrated=normalizeDeckSettings(old);
-  assert.equal(migrated.cassette,'ocean');
-  for(const [key,value] of Object.entries(old))assert.equal(migrated[key],value);
-  assert.deepEqual(getCassetteParams(migrated),old);
+test('only Dots is registered and its source is one local tape file',()=>{
+  assert.deepEqual(CASSETTES.map(c=>c.id),['dot-field']);
+  assert.deepEqual(CASSETTES[0].controls,[]);
+  assert.equal(CASSETTES[0].source,'tapes/dots.js');
 });
-test('all built-in tapes have versioned finite data and independent controls',()=>{
-  assert.equal(new Set(CASSETTES.map(c=>c.id)).size,4);
-  for(const item of CASSETTES){
-    assert.ok(item.name.zh&&item.name.en&&item.subtitle.zh&&item.subtitle.en);
-    const params=getCassetteParams(DECK_DEFAULTS,item.id);
-    for(const [key,min,max,step] of item.controls){assert.ok(params[key]>=min&&params[key]<=max);assert.ok(step>0);}
+test('retired ids migrate to Dots but legacy ocean data remains inert and untouched',()=>{
+  const old={enabled:false,tint:'#393c3c',brightness:1.54,opacity:.5,waveStrength:1,speed:.55,damping:.74,cassette:'ocean'};
+  const migrated=normalizeDeckSettings(old);assert.equal(migrated.cassette,'dot-field');
+  for(const [key,value]of Object.entries(old))if(key!=='cassette')assert.equal(migrated[key],value);
+  for(const id of ['ocean','contour','ripple','alien']){
+    assert.equal(normalizeDeckSettings({cassette:id}).cassette,'dot-field');
+    assert.throws(()=>cassettePatch(DECK_DEFAULTS,id,{}),/Unknown/);
   }
 });
-test('insert and per-tape edits preserve all other tapes and the original ocean',()=>{
-  const old=normalizeDeckSettings({tint:'#393c3c',damping:.74});
-  const dot=normalizeDeckSettings({...old,...cassettePatch(old,'dot-field',{strength:1.1,tint:'#aabbcc'})});
-  const ripple=normalizeDeckSettings({...dot,...cassettePatch(dot,'ripple',{opacity:.22})});
-  assert.equal(ripple.cassette,'ripple');assert.equal(ripple.tint,old.tint);assert.equal(ripple.damping,.74);
-  assert.equal(getCassetteParams(ripple,'dot-field').strength,1.1);
-  const restored=normalizeDeckSettings({...ripple,...cassettePatch(ripple,'ocean',getCassetteParams(ripple,'ocean'))});
-  assert.deepEqual(getCassetteParams(restored),getCassetteParams(old));
-  assert.equal(getCassetteParams(restored,'dot-field').tint,'#aabbcc');
+test('fixed Dots ignores old saved variations and incoming insertion parameters',()=>{
+  const state=normalizeDeckSettings({cassetteSettings:{'dot-field':{tint:'#ff0000',strength:0,scale:1.8,opacity:.1},ripple:{strength:1}}});
+  assert.deepEqual(getCassetteParams(state),CASSETTES[0].defaults);
+  const patch=cassettePatch(state,'dot-field',{strength:0});
+  assert.deepEqual(patch.cassetteSettings['dot-field'],CASSETTES[0].defaults);
+  assert.ok(!('enabled'in patch));
+  assert.ok(!('ripple'in state.cassetteSettings));
 });
-test('unknown tape ids and malformed values cannot escape the catalog',()=>{
-  assert.equal(normalizeDeckSettings({cassette:'alien'}).cassette,'ocean');
+test('normalization handles missing, malformed and unknown settings without arbitrary keys',()=>{
   assert.deepEqual(normalizeDeckSettings(null),normalizeDeckSettings({}));
-  assert.throws(()=>cassettePatch(DECK_DEFAULTS,'alien',{}),/Unknown/);
-  const params=normalizeCassetteParams('dot-field',{strength:Infinity,scale:500,opacity:-1,tint:'red',speed:NaN});
-  assert.equal(params.scale,1.8);assert.equal(params.opacity,0);assert.equal(params.strength,.65);
-  assert.ok(!('alien' in normalizeDeckSettings({cassetteSettings:{alien:{}}}).cassetteSettings));
+  assert.ok(!('alien'in normalizeDeckSettings({cassetteSettings:{alien:{}}}).cassetteSettings));
 });
-test('tape selection and its parameters are one atomic persisted mutation',async()=>{
+test('insert is one atomic path mutation and preserves concurrent power and archived data',async()=>{
   let value=normalizeDeckSettings({});let writes=[];const listeners=new Set();
   const form={getSnapshot:()=>({status:'ready',writable:true,value}),subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
     async mutate(ops){writes.push(ops);value=applySettingsOps(value,ops);for(const fn of listeners)fn();return true;}};
   const model=createAppearanceModel(form,DECK_DEFAULTS,normalizeDeckSettings,()=> 'failed',deckPatchOperations);
-  model.update(cassettePatch(model.getSnapshot().settings,'dot-field',{strength:.8}));
-  assert.equal(model.getSnapshot().settings.cassette,'dot-field');
-  await delay(280);
-  assert.equal(writes.length,1);assert.deepEqual(writes[0].map(op=>op.path[0]).sort(),['cassette','cassetteSettings']);
-  assert.equal(getCassetteParams(model.getSnapshot().settings).strength,.8);model.dispose();
+  model.update(cassettePatch(model.getSnapshot().settings,'dot-field',{}));
+  value={...value,enabled:false,damping:.93,cassetteSettings:{...value.cassetteSettings,ripple:{strength:1.4}}};
+  for(const fn of listeners)fn();await delay(280);
+  assert.equal(writes.length,1);assert.deepEqual(writes[0].map(op=>op.path),[['cassette'],['cassetteSettings','dot-field']]);
+  assert.equal(value.enabled,false);assert.equal(value.damping,.93);assert.equal(value.cassetteSettings.ripple.strength,1.4);
+  assert.deepEqual(getCassetteParams(value),CASSETTES[0].defaults);model.dispose();
 });
-test('pending insertion preserves a concurrent unrelated tape and global power write',async()=>{
-  let value=normalizeDeckSettings({});const listeners=new Set();let writes=[];
-  const form={getSnapshot:()=>({status:'ready',writable:true,value}),subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
-    async mutate(ops){writes.push(ops);value=applySettingsOps(value,ops);for(const fn of listeners)fn();return true;}};
-  const model=createAppearanceModel(form,DECK_DEFAULTS,normalizeDeckSettings,()=> 'failed',deckPatchOperations);
-  model.update(cassettePatch(model.getSnapshot().settings,'dot-field',{strength:1.2}));
-  value=normalizeDeckSettings({...value,enabled:false,cassetteSettings:{ripple:{strength:1.4}}});
-  for(const fn of listeners)fn();
-  await delay(280);
-  assert.equal(writes.length,1);
-  assert.deepEqual(writes[0].map(op=>op.path),[['cassette'],['cassetteSettings','dot-field']]);
-  assert.equal(getCassetteParams(value,'ripple').strength,1.4);
-  assert.equal(getCassetteParams(value,'dot-field').strength,1.2);
-  assert.equal(value.enabled,false);model.dispose();
-});
-test('ocean insertion cannot overwrite the global enable switch',()=>{
-  const state=normalizeDeckSettings({enabled:false});
-  const patch=cassettePatch(state,'ocean',{...getCassetteParams(state,'ocean'),enabled:true});
-  assert.ok(!('enabled' in patch));
-  assert.equal(normalizeDeckSettings({...state,...patch}).enabled,false);
-});
-
