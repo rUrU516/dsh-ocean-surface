@@ -1,6 +1,6 @@
 # Background Tapes — Cassette API v1
 
-Version **0.8.2**, branch `feat/cassette-deck`. Two fixed built-ins: Dots (`dot-field`) and the restored original Ocean Surface (`ocean-surface`). This is our plugin's internal extension contract, **not an official DSH background API or third-party code loader**. Neither tape exposes user/Agent parameter tuning.
+Version **0.8.3**, branch `feat/cassette-deck`. Two fixed built-ins: Dots (`dot-field`) and the restored original Ocean Surface (`ocean-surface`). This is our plugin's internal extension contract, **not an official DSH background API or third-party code loader**. Neither tape exposes user/Agent parameter tuning.
 
 ## One local source module per tape
 
@@ -65,7 +65,7 @@ The [surface adapter](<../effect-surface.js>) owns canvas DOM, ResizeObserver, R
 
 ## Selection, preview and persistence
 
-The [deck](<../deck-panel.js>) provides an audition selection separate from the active tape. Choosing a card does not save; **Use this tape** writes the fixed preset through [cassettePatch](<../cassette-catalog.js>) and shared [path operations](<../cassette-operations.js>). Global `enabled` is independent; insertion never powers the background on. Read-only, saving and save-failure states remain explicit.
+The [deck](<../deck-panel.js>) provides an audition selection separate from the active tape. Choosing a card does not save; an accepted **drop into the slot** or explicit **insert button** runs the insertion animation and writes the fixed preset through [cassettePatch](<../cassette-catalog.js>) and shared [path operations](<../cassette-operations.js>). Global `enabled` is independent; insertion never powers the background on. Read-only, saving and save-failure states remain explicit.
 
 Package name stays `@local/dsh-cursor-ripples`; Settings namespace stays `cursor-ripples`. UI and Agent share Host Settings, not localStorage. Stored shape:
 

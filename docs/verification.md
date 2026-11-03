@@ -1,3 +1,19 @@
+# Background Tapes — verification record
+
+## 0.8.3 · 3D drawer and drag-in transport
+
+Stable 0.8.2 composer-side fix was pushed before implementation: local and remote `feat/cassette-deck` both at `2db1962`. The user confirmed that fix before requesting the drawer.
+
+Changes are limited to the Settings hardware presentation and local pointer/animation transport; both fixed tape renderers and the accepted composer CSS stay unchanged. Geometry helpers have five pure tests (bounds, invalid targets, threshold distance, measured alignment, reduced motion); three additional tests exercise the actual shared persistence model for pending-vs-accepted selection, rollback and read-only refusal. They do not emulate browser drag or React.
+
+Final verification: **78/78 node tests pass**, build and generated Client syntax pass, 43 English/Chinese dictionary keys match, exactly one live audition Surface and exactly two setting-write call sites remain (accepted insertion and explicit power). Manifest/source distribution and localized metadata resources pass; existing original cassette icon is retained. Native composer CSS is unchanged. Known cached Client artifact equals the final generated artifact. Plugin disable/enable both returned `application: applied`, `warnings: []`; live overlay **`local-background-tapes-adapter-v083-3d-drawer`** and Settings **`local-ocean-appearance`** are active. Before/after real tool reads both show **Ocean, enabled true**, with identical fixed values; no actual background switch or power test was performed.
+
+Pointer listeners/capture/650ms animation timers are locally owned and cleared on cancellation/unmount. Scroll, resize, blur and Escape cancel the not-yet-committed insertion; an already-submitted Settings update remains owned by the shared persistence model. Ghost coordinates compensate for ancestor translation and axis-aligned scale using an owned fixed origin; arbitrary ancestor rotation/clipping is not claimed as verified.
+
+Real browser appearance, pointer capture, touch scroll behavior, keyboard focus and animation pacing require real-page/user confirmation; no mock screenshot or browser automation was used.
+
+---
+
 # 0.8.2 verification record — Dots + original Ocean
 
 Date: 2026-11-03 (Asia/Shanghai). Branch `feat/cassette-deck`; `main` and formal Release unchanged.

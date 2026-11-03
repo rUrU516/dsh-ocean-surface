@@ -1,13 +1,13 @@
 {
   "name": "@local/dsh-cursor-ripples",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "private": true,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/rUrU516/dsh-ocean-surface.git"
   },
   "homepage": "https://github.com/rUrU516/dsh-ocean-surface#readme",
-  "description": "Background Tapes: fixed Dots and original Ocean Surface cassettes, with interactive audition and no parameter controls.",
+  "description": "Background Tapes: a 3D drawer with drag-in insertion, interactive audition and fixed Dots / original Ocean Surface cassettes.",
   "scripts": {
     "build": "node build.js",
     "test": "node --test *.test.js tapes/*.test.js"
@@ -43,6 +43,9 @@
     "effect-runtime.test.js",
     "effect-surface.js",
     "deck-panel.js",
+    "deck-transport.js",
+    "deck-transport.test.js",
+    "deck-saving.test.js",
     "docs/*.md"
   ],
   "dsh": {
