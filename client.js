@@ -81,11 +81,12 @@ function dotsSampleNormalized(x, y, width, height, cursor, params, dark, palette
   const influence = amount * falloff;
   const focus = dotsClamp(influence, 0, 1);
   const dilation = 1 + (5 / 9) * influence;
-  const radius = .9 * params.scale + 1.6 * params.scale * influence;
+  // Lift resting dots without enlarging the already approved 2.5px lens center.
+  const radius = 1.2 * params.scale + 1.3 * params.scale * influence;
   const baseAlpha = dark ? .5 : .42;
   return {
     x: x + dx * (dilation - 1), y: y + dy * (dilation - 1),
-    radius, baseRadius: .9 * params.scale, spacing: 18 * params.scale,
+    radius, baseRadius: 1.2 * params.scale, spacing: 18 * params.scale,
     dilation, influence, blend, baseRgb,
     rgb: dotsMix(baseRgb, palette.core, focus),
     alpha: baseAlpha + (.95 - baseAlpha) * focus,
@@ -93,8 +94,8 @@ function dotsSampleNormalized(x, y, width, height, cursor, params, dark, palette
     coreRgb: palette.core, haloRgb: palette.halo,
     // Only two local, soft translucent layers; never shadowBlur per grid point.
     halos: [
-      { radius: radius + 8 * focus, alpha: .16 * focus * focus },
-      { radius: radius + 3.5 * focus, alpha: .28 * focus * focus },
+      { radius: radius + 12 * focus, alpha: .18 * focus * focus },
+      { radius: radius + 4.5 * focus, alpha: .30 * focus * focus },
     ],
   };
 }
@@ -154,6 +155,12 @@ function dotsAdvanceInteraction(state, dt, params, reducedMotion = false) {
   return !settled;
 }
 
+/** A single soft pool ties the individual halos together, fading on pointer leave. */
+function dotsGlowPool(cursor, params, dark) {
+  const amount = dotsClamp(dotsFinite(cursor?.amount), 0, 1) * dotsClamp(dotsFinite(params?.strength), 0, 1.5);
+  return { radius: 180, alpha: (dark ? .055 : .025) * Math.min(1, amount) };
+}
+
 function dotsCircle(context, x, y, radius) {
   context.moveTo(x + radius, y);
   context.arc(x, y, radius, 0, dotsTau);
@@ -174,6 +181,19 @@ function dotsDraw(context, width, height, state, params, dark) {
   gradient.addColorStop(1, dotsCssRgb(palette.warm));
   // Grid phase is fixed in CSS pixels. A resize reveals more grid, never scales it.
   context.save();
+  const pool = dotsGlowPool(state.cursor, params, dark);
+  if (pool.alpha > .00001) {
+    const px = state.cursor.x * width, py = state.cursor.y * height;
+    const poolRgb = palette.halo.map(value => Math.round(value)).join(',');
+    const glow = context.createRadialGradient(px, py, 0, px, py, pool.radius);
+    glow.addColorStop(0, `rgba(${poolRgb},1)`);
+    glow.addColorStop(.35, `rgba(${poolRgb},.55)`);
+    glow.addColorStop(.72, `rgba(${poolRgb},.14)`);
+    glow.addColorStop(1, `rgba(${poolRgb},0)`);
+    context.fillStyle = glow;
+    context.globalAlpha = pool.alpha;
+    context.fillRect(px - pool.radius, py - pool.radius, pool.radius * 2, pool.radius * 2);
+  }
   context.beginPath();
   for (let y = gap / 2; y < height; y += gap) {
     for (let x = gap / 2; x < width; x += gap) {
@@ -182,7 +202,7 @@ function dotsDraw(context, width, height, state, params, dark) {
       if (state.cursor.amount > 0 && params.strength > 0 && dx * dx + dy * dy < dotsLensRadius * dotsLensRadius) {
         local.push(dotsSampleNormalized(x, y, width, height, state.cursor, params, dark, palette));
       } else {
-        dotsCircle(context, x, y, .9 * params.scale);
+        dotsCircle(context, x, y, 1.2 * params.scale);
       }
     }
   }
@@ -791,7 +811,7 @@ window.__ModuleLoader__.load({
             h('style',null,backgroundCSS),
             h(Surface,{key:cassette,cassette,params:getCassetteParams(settings),enabled:settings.enabled,preview:false,onError:()=>setFailed(true),onReady:()=>setFailed(false)})),target):null);
       }
-      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v081-dots-clear',order:-100},Background));
+      ctx.slots.inject('shell.overlay',()=>ctx.slots.register({name:'shell.overlay',id:'local-background-tapes-adapter-v081-dots-bloom',order:-100},Background));
     }};
   },
 });

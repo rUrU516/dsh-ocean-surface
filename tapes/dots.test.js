@@ -2,7 +2,7 @@ import dotsTest from 'node:test';
 import dotsAssert from 'node:assert/strict';
 import {
   DOTS_CASSETTE, normalizeDotsParams, dotsSample,
-  dotsCreateInteraction, dotsPointer, dotsAdvanceInteraction, createDotsEffect,
+  dotsCreateInteraction, dotsPointer, dotsAdvanceInteraction, createDotsEffect, dotsGlowPool,
 } from './dots.js';
 
 const dotsParams = normalizeDotsParams();
@@ -45,9 +45,9 @@ dotsTest('normalization clamps all original bounds and does not coerce invalid i
   dotsAssert.deepEqual(normalizeDotsParams({ tint: 'red', opacity: NaN, strength: Infinity, scale: '1', speed: null }), dotsParams);
 });
 
-dotsTest('quiet base dots are .9px on an 18 CSSpx grid, independent of backing size', () => {
+dotsTest('quiet base dots are 1.2px on an 18 CSSpx grid, independent of backing size', () => {
   const sample = dotsSample(9, 9, dotsSize);
-  dotsClose(sample.radius, .9);
+  dotsClose(sample.radius, 1.2);
   dotsClose(sample.spacing, 18);
   dotsClose(sample.alpha, .5);
   dotsClose(sample.dilation, 1);
@@ -103,7 +103,7 @@ dotsTest('radius, glow, brightness and displacement fade continuously to a quiet
   }
   const edge = dotsAt(160);
   dotsClose(edge.x, dotsCenter.x + 160);
-  dotsClose(edge.radius, .9);
+  dotsClose(edge.radius, 1.2);
   dotsClose(edge.alpha, .5);
   dotsClose(edge.halos[0].alpha, 0);
   const inner = dotsAt(159.99);
@@ -132,7 +132,7 @@ dotsTest('bounded radial map never folds even at maximum strength and at every s
 
 dotsTest('strength zero removes lens, glow, enlargement and all additional scheduling', () => {
   const sample = dotsAt(0, { params: { strength: 0 } });
-  dotsClose(sample.radius, .9);
+  dotsClose(sample.radius, 1.2);
   dotsClose(sample.alpha, .5);
   dotsClose(sample.dilation, 1);
   dotsAssert.equal(sample.coreAlpha, 0);
@@ -143,6 +143,16 @@ dotsTest('strength zero removes lens, glow, enlargement and all additional sched
   dotsAssert.equal(dotsAdvanceInteraction(state, .05, normalizeDotsParams({ strength: 0 })), false);
   dotsAssert.equal(state.cursor.amount, 0);
   dotsAssert.equal(state.pointer, null);
+});
+
+dotsTest('one broad glow pool fades with the pointer, without ambient animation', () => {
+  const pool = dotsGlowPool(dotsCursor, dotsParams, true);
+  dotsClose(pool.radius, 180);
+  dotsClose(pool.alpha, .055);
+  dotsAssert.equal(dotsGlowPool({ amount: 0 }, dotsParams, true).alpha, 0);
+  dotsAssert.equal(dotsGlowPool(dotsCursor, { strength: 0 }, true).alpha, 0);
+  dotsClose(dotsGlowPool({ amount: .5 }, dotsParams, true).alpha, pool.alpha / 2);
+  dotsAssert.ok(dotsGlowPool(dotsCursor, dotsParams, false).alpha < pool.alpha);
 });
 
 dotsTest('opacity belongs to the outer surface, not the tape samples', () => {
